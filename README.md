@@ -53,4 +53,4 @@ No neural network is downloaded, and nothing leaves your PC. The engine uses the
 - **Latency:** takes are shifted by the reported device latency. If your vocal still lands late or early, nudge **Latency trim** (positive pulls takes earlier).
 - **Storage:** takes, the beat and lyrics live in the app's local storage, so they survive restarts. Export anything you want to keep.
 - **Offline:** after the first launch the app shell is cached and keeps working offline.
-- **Netlify:** live at **https://mv-booth.netlify.app** once the repo is linked. Netlify rebuilds on every push to `main` (`build.mjs` publishes only the app, not the installers). Open it in Edge or Chrome and click **Install** in the address bar for a desktop app with no Node.js needed.
+- **Netlify:** **https://mv-booth.netlify.app** (password-protected). Netlify rebuilds on every push to `main`; `build.mjs` publishes only the app, not the installers. To install it as an app with no Node.js: open the link in Edge or Chrome, enter the site password once, then click **Install** in the address bar.
