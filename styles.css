@@ -360,3 +360,60 @@ body.recording .lane-head .arm.on { animation: recPulse 1.1s infinite; }
 .regions .rg.tuned { background: rgba(18, 224, 208, 0.08); }
 .regions .rg.skip { background: rgba(255, 59, 74, 0.08); color: #ff8a93; }
 .regions .rg.fine { color: var(--dim); }
+
+/* ---------------------------------------------------------------- 2.3 clarity */
+.guide-btn { padding: 8px 12px; border-radius: 10px; border: 1px solid rgba(18, 224, 208, 0.4); color: var(--teal); background: rgba(18, 224, 208, 0.08); font: 600 12px "Space Grotesk"; }
+.tools { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: rgba(0, 0, 0, 0.4); border: 1px solid var(--edge); }
+.tools button { height: 26px; padding: 0 10px; border-radius: 8px; font: 600 11px "Space Grotesk"; color: var(--dim); }
+.tools button.on { color: #170900; background: linear-gradient(135deg, #ffd29a, var(--orange)); box-shadow: 0 0 12px rgba(255, 122, 26, 0.45); }
+.hint { padding: 6px 14px; font-size: 12px; color: #b8c2cc; border-bottom: 1px solid var(--edge); background: rgba(18, 224, 208, 0.04); min-height: 29px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hint b { color: var(--teal); }
+.timeline[data-tool="move"] .lane.vocal canvas.over-clip { cursor: grab; }
+.timeline[data-tool="trim"] .lane.vocal canvas.over-clip { cursor: ew-resize; }
+.timeline[data-tool="cut"] .lane.vocal canvas.over-clip { cursor: crosshair; }
+.timeline[data-tool="fade"] .lane.vocal canvas.over-clip { cursor: nwse-resize; }
+.explain { font-size: 12px; line-height: 1.55; color: #aeb8c3; margin: 0; padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--edge); }
+.explain b { color: var(--text); }
+.presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.presets button { text-align: left; padding: 9px 10px; border-radius: 10px; border: 1px solid var(--edge); background: rgba(0, 0, 0, 0.35); font-size: 12px; }
+.presets button b { display: block; font-weight: 600; color: var(--text); }
+.presets button small { color: var(--dim); font-size: 10.5px; }
+.presets button:hover { border-color: rgba(255, 122, 26, 0.5); }
+.strip label span { color: var(--text); }
+
+.rec-banner { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: linear-gradient(90deg, rgba(255, 59, 74, 0.35), rgba(255, 59, 74, 0.12)); border-bottom: 1px solid rgba(255, 59, 74, 0.6); font: 600 13px "Space Grotesk"; }
+.rec-banner[hidden] { display: none; }
+.rec-banner i { width: 14px; height: 14px; border-radius: 50%; background: var(--red); box-shadow: 0 0 14px var(--red); animation: blink 1s steps(2) infinite; }
+.rec-banner b { font: 700 13px var(--display); letter-spacing: 0.18em; color: #fff; }
+.rec-banner span { font: 600 13px var(--mono); color: #ffd7da; }
+.rec-banner em { margin-left: auto; width: 160px; height: 8px; border-radius: 4px; background: rgba(0, 0, 0, 0.5); overflow: hidden; }
+.rec-banner u { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--teal) 60%, var(--amber) 85%, var(--red)); transition: width 60ms linear; }
+.rec-banner.countin { background: linear-gradient(90deg, rgba(255, 179, 92, 0.35), rgba(255, 179, 92, 0.1)); border-color: rgba(255, 179, 92, 0.6); }
+.rec-banner.countin i { background: var(--amber); box-shadow: 0 0 14px var(--amber); }
+@keyframes blink { 50% { opacity: 0.25; } }
+body.recording .stage { box-shadow: 0 0 0 2px rgba(255, 59, 74, 0.7), 0 0 40px rgba(255, 59, 74, 0.25); }
+
+.guide { position: fixed; inset: 0; z-index: 40; background: rgba(2, 3, 5, 0.75); backdrop-filter: blur(6px); display: grid; place-items: center; padding: 24px; }
+.guide[hidden] { display: none; }
+.guide-card { position: relative; width: min(860px, 100%); max-height: 88vh; overflow-y: auto; border-radius: 18px; padding: 26px 30px; }
+.guide-card h2 { font: 700 22px var(--display); margin: 0 0 12px; }
+.guide-card h3 { font: 600 13px var(--display); letter-spacing: 0.08em; color: var(--orange); margin: 22px 0 8px; text-transform: uppercase; }
+.guide-card p, .guide-card li { color: #c9d1d9; line-height: 1.6; font-size: 13.5px; }
+.guide-card b { color: #fff; }
+.guide-card .close { position: absolute; right: 18px; top: 18px; }
+.guide-nav { display: flex; flex-wrap: wrap; gap: 6px; }
+.guide-nav a { color: var(--teal); text-decoration: none; font: 600 11px var(--mono); padding: 4px 8px; border: 1px solid rgba(18, 224, 208, 0.3); border-radius: 999px; }
+.guide-card .close { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--edge); font-size: 12px; }
+/* Keep the command bar on one row at 1440px+ with the Guide button added */
+.bar { gap: 12px; padding: 10px 16px; }
+.brand small { display: none; }
+.session-btn { max-width: 150px; }
+.transport { gap: 8px; }
+.clock-wrap { min-width: 124px; }
+.chips { gap: 4px; }
+.chip { padding: 5px 7px; letter-spacing: 0.08em; }
+.core { padding: 12px 20px; letter-spacing: 0.16em; }
+.bar { flex-wrap: nowrap; }
+.brand b { font-size: 13px; letter-spacing: 0.14em; }
+@media (max-width: 1700px) { #chipKey { display: none; } }
+@media (max-width: 1480px) { .seg button { padding: 7px 10px; } .bar { flex-wrap: wrap; } }

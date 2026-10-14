@@ -26,6 +26,9 @@ In the **Tune** tab, *Studio tune* shows a green dot when the backend is online.
 
 ## Session flow (DAW basics)
 
+New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language walkthrough of the tools, mixer, presets and tuning. While you record, a red **RECORDING** bar shows the take time and your input level, and your waveform draws in red on the track.
+
+
 | Step | How |
 | --- | --- |
 | Beat | Drag an instrumental onto the timeline, or **Booth → Import beat**. Tempo is detected; **Tap** (T) or type it to override. |
@@ -34,7 +37,7 @@ In the **Tune** tab, *Studio tune* shows a green dot when the backend is online.
 | Loop record | Drag across the ruler to set a loop and press **L**, then record: every pass becomes a take. |
 | Comp | Open the take lanes (the `3 ▾` chip), split at the playhead (**X**), select a clip, click **Comp** on the take you want for that section. **★** marks the best take. |
 | Punch-in | Shift-drag on the ruler (or select, then **Punch ← selection**), press **P**, arm a track, press **R**. Playback starts 1–2 bars early (pre-roll), recording runs exactly from punch-in to punch-out, playback continues one bar (post-roll), and it stops itself. The punch lands as a new take with 10 ms crossfades at both edges. |
-| Edit | Drag clips to move (snaps to 1/16; hold Alt to bypass), drag edges to trim, drag the top corners for fades. The clip inspector sets gain and fade times. |
+| Edit tools | Pick a tool in the toolbar (or keys **1–4**): **✥ Move** drags clips, **⇤ Trim** drags clip ends, **✂ Cut** splits where you click, **◢ Fade** drags fade-ins/outs. The hint line under the toolbar always says what the current tool does, and explains anything you hover. |
 | Mix | Header sliders or the **Mixer** tab: volume, pan, reverb and delay sends, meters, master fader. Mix direction sets loudness target, reverb type, delay division. |
 | Automix | Runs the 8-stage engine. Click a stage in the dock to switch it off. **Cancel** stops it safely. |
 | Compare | **B** flips between your rough mix and the engine mix. |
@@ -42,7 +45,7 @@ In the **Tune** tab, *Studio tune* shows a green dot when the backend is online.
 | Sessions | Session name (top left): new, rename, duplicate, delete to trash (restorable for 30 days). Autosaves constantly. |
 
 ### Keyboard
-`Space` play/pause · `Enter` stop (back to start point) · `Home` return to zero · `R` record · `L` loop · `P` punch · `C` click · `T` tap tempo · `X` split · `Delete` delete clip · `M` marker · `B` raw/mix · `E` export · `←/→` nudge a beat (Shift = bar) · `+/−` zoom · `F` fit · `Ctrl+Z` undo · `Ctrl+Shift+Z` redo · `Ctrl+S` save. While recording with the prompter open: `↓/↑` move the lyric line.
+`Space` play / pause / pick up where you paused (works even right after clicking a button) · `Enter` stop (back to start point) · `Home` return to zero · `R` record · `L` loop · `P` punch · `C` click · `T` tap tempo · `X` split · `Delete` delete clip · `M` marker · `B` raw/mix · `E` export · `←/→` nudge a beat (Shift = bar) · `+/−` zoom · `F` fit · `Ctrl+Z` undo · `Ctrl+Shift+Z` redo · `Ctrl+S` save · `1–4` tools · `?` guide. While recording with the prompter open: `↓/↑` move the lyric line.
 
 **Lyrics:** start a line with `[bar 5]` and the prompter highlights it when the playhead reaches bar 5.
 

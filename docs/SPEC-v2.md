@@ -27,7 +27,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Mute / solo (solo overrides mute) | ✓ | **Built** |
 | Take lanes, ★ best, use whole take | ✓ | **Built**: collapsible per track |
 | Region comping (a different take per section) | ✗ | **Built**: split, then "Comp" swaps a take into the selected clip |
-| Clips: move, trim, split, delete | ✗ | **Built**: drag body / drag edges / X / Delete; overlaps are overwritten playlist-style |
+| Clips: move, trim, split, delete | ✗ | **Built**: explicit tool picker (2.3): Move / Trim / Cut / Fade, keys 1–4, tool cursors, hint line; X cuts at playhead, Delete removes |
 | Clip gain and fades | ✗ (metadata only) | **Built**: drag the fade handles on top corners, or set them in the clip inspector |
 | Snap to grid | ✓ | **Built**: 1/16 grid; hold Alt to bypass |
 | Zoom and scroll | ✓ (0.5–2.2×) | **Built**: −/+/Fit, Ctrl+wheel zooms at the cursor, Shift/sideways wheel scrolls, follows the playhead |
@@ -41,6 +41,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 |---|---|---|
 | Input gain (−∞…+24 dB) before the recorder | ✓ | **Built** |
 | Input meter + clip-hold LED | ✓ | **Built** (2 s hold) |
+| Recording clearly visible while it happens | ✗ | **Built (2.3)**: count-in / pre-roll / RECORDING / post-roll banner with time recorded and live input level, red timeline glow, live red waveform on the armed track |
 | Direct monitoring post-gain | ✓ | **Built**: round-trip readout, warns over 25 ms |
 | Latency trim + auto-calibrate, stored per device | ✓ | **Built**: 4-click loopback, median onset |
 | Monitoring through FX (live reverb in headphones) | ✗ | Not built |

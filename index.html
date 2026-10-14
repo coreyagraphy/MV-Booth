@@ -28,9 +28,10 @@
         <div><b>MV BOOTH</b><small>VOCAL ENGINE</small></div>
       </div>
       <div class="menu-wrap">
-        <button id="btnSession" class="session-btn" title="Sessions"><span id="sessionName">Session</span> <i>▾</i></button>
+        <button id="btnSession" class="session-btn" title="Sessions: open, create, rename, duplicate or delete a session"><span id="sessionName">Session</span> <i>▾</i></button>
         <div class="menu glass" id="sessionMenu" hidden></div>
       </div>
+      <button id="btnGuide" class="guide-btn" title="Open the guide: how the tools, mixer, tuning and presets work">? Guide</button>
       <div class="seg" id="modeSeg" role="radiogroup" aria-label="Mix mode">
         <span class="thumb"></span>
         <button data-mode="rap" role="radio">Rap</button>
@@ -76,6 +77,13 @@
             </div>
           </div>
           <span class="sep"></span>
+          <div class="tools" id="toolSeg" role="radiogroup" aria-label="Edit tool">
+            <button data-tool="move" title="Move tool (1 or V): drag a clip left or right to move it in time">✥ Move</button>
+            <button data-tool="trim" title="Trim tool (2): drag near either end of a clip to shorten or lengthen it">⇤ Trim</button>
+            <button data-tool="cut" title="Cut tool (3): click inside a clip to cut it in two at that spot">✂ Cut</button>
+            <button data-tool="fade" title="Fade tool (4): drag on the left half for a fade-in, on the right half for a fade-out">◢ Fade</button>
+          </div>
+          <span class="sep"></span>
           <button class="tb" id="btnUndo" title="Undo (Ctrl+Z)">↶</button>
           <button class="tb" id="btnRedo" title="Redo (Ctrl+Shift+Z)">↷</button>
           <span class="sep"></span>
@@ -105,6 +113,8 @@
           <button class="tb" id="btnZoomIn" title="Zoom in (+)">+</button>
           <button class="tb" id="btnFit" title="Fit the session (F)">Fit</button>
         </div>
+        <div class="hint" id="hint"></div>
+        <div class="rec-banner" id="recBanner" hidden><i></i><b id="recText">RECORDING</b><span id="recSub"></span><em><u id="recLvl"></u></em></div>
         <div class="timeline" id="timeline">
           <div class="ruler-row"><div class="ruler-head" id="rulerHead">BARS</div><canvas id="ruler"></canvas></div>
           <div class="lanes" id="lanes"></div>
@@ -156,8 +166,13 @@
           </div>
 
           <div class="tab" data-panel="mixer">
+            <p class="explain">Each column is one track. <b>Fader</b> up = louder (double-click resets to 0 dB). <b>Pan</b> moves it left or right. <b>Reverb</b> and <b>Echo</b> add room and repeats to that track. <b>M</b> mutes, <b>S</b> solos (only soloed tracks play). The bar next to the fader is that track's level while playing. The last column is the master volume for everything.</p>
             <div class="strips" id="strips"></div>
+            <h3>Quick presets</h3>
+            <p class="explain">One click sets the whole mix direction below. Then hit <b>Automix</b> to hear it.</p>
+            <div class="presets" id="mixPresets"></div>
             <h3>Mix direction</h3>
+            <p class="explain"><b>Loudness target</b>: how loud the final export is (streaming platforms use −14). <b>Vocal vs beat</b>: + puts your voice further in front of the beat. <b>Reverb</b>: size of the room around the vocal. <b>Delay</b>: echo timed to the beat. <b>Space amount</b>: how much reverb and echo overall.</p>
             <label class="field"><span>Loudness target</span>
               <select id="target">
                 <option value="-14">Streaming · −14 LUFS</option>
@@ -175,9 +190,11 @@
           </div>
 
           <div class="tab" data-panel="tune">
+            <p class="explain"><b>Two ways to tune.</b> (1) <b>Automix tune</b> runs automatically every time you press Automix: fast and in the browser. (2) <b>Studio tune</b> (further down) is the high-quality version. It sends one take to the backend on your PC and gives you back a tuned take. Use Studio tune for the final vocal.</p>
+            <h3>1 · Automix tune</h3>
             <label class="field"><span>Correction</span>
               <div class="seg small" id="styleSeg"><span class="thumb"></span>
-                <button data-style="off">Off</button><button data-style="natural">Natural</button><button data-style="tight">Tight</button><button data-style="hard">Hard</button>
+                <button data-style="off" title="No pitch correction during Automix">Off</button><button data-style="natural" title="Gentle: fixes off notes, keeps your vibrato and slides">Natural</button><button data-style="tight" title="Firmer: lands every note, keeps a little movement">Tight</button><button data-style="hard" title="Instant snap: the robotic hard-tune effect">Hard</button>
               </div>
             </label>
             <div class="pair">
@@ -186,7 +203,8 @@
             </div>
             <label class="check"><input type="checkbox" id="alignDoubles" checked /> <span>Line recorded doubles up to the lead <small>Timing (DTW + time-warp) and pitch-match</small></span></label>
             <label class="field"><span>Alignment tightness <output id="tightOut">90%</output></span><input type="range" id="tight" min="0.3" max="1" step="0.05" /></label>
-            <h3>Studio tune · CREPE + WORLD <span class="be-dot" id="beDot" title="Backend status"></span> <span class="muted small" id="beStatus">checking…</span></h3>
+            <h3>2 · Studio tune · CREPE + WORLD <span class="be-dot" id="beDot" title="Backend status"></span> <span class="muted small" id="beStatus">checking…</span></h3>
+            <p class="explain"><b>Retune speed</b>: how fast a note snaps to the right pitch. 0 ms = instant, the robotic "T-Pain" sound. 40–80 ms = natural. 200 ms+ = very gentle. <b>Vibrato keep</b>: 100% keeps your natural wobble, 0% irons it flat. <b>Amount</b>: how far toward the correct note (100% = all the way). <b>Confidence</b>: parts the engine isn't sure about are left alone; raise it to touch less. <b>Preserve formants</b>: keeps your voice sounding like you.</p>
             <p class="muted small">Offline, best quality. Sends the selected take to the local backend; the tuned version comes back as a new take. The original is never touched. Low-confidence regions are left untuned.</p>
             <label class="field"><span>Retune speed <output id="stRetuneOut"></output></span><input type="range" id="stRetune" min="0" max="400" step="5" /></label>
             <label class="field"><span>Vibrato keep <output id="stVibOut"></output></span><input type="range" id="stVib" min="0" max="1" step="0.05" /></label>
@@ -245,6 +263,21 @@
     <div class="prompter" id="prompter" hidden>
       <button class="close" id="prompterClose" aria-label="Close prompter">Esc</button>
       <div class="prompter-scroll" id="prompterScroll"><div id="prompterText"></div></div>
+    </div>
+    <div class="guide" id="guide" hidden>
+      <div class="guide-card glass">
+        <button class="close" id="guideClose">Close (Esc)</button>
+        <h2>MV Booth guide</h2>
+        <nav class="guide-nav"><a href="#g-start">Quick start</a><a href="#g-tools">Edit tools</a><a href="#g-record">Recording</a><a href="#g-mixer">Mixer</a><a href="#g-presets">Presets</a><a href="#g-tune">Tuning</a><a href="#g-automix">Automix</a><a href="#g-keys">Keys</a></nav>
+        <section id="g-start"><h3>Quick start</h3><ol><li>Drag your beat onto the timeline (or Booth → Import beat).</li><li>Click <b>+ Track → Lead</b>, then click the round red button on the track to <b>arm</b> it.</li><li>Click <b>Enable mic</b> in the Booth tab, then press <b>R</b> to record. A red <b>RECORDING</b> bar shows while it's going. Press <b>R</b> or <b>Space</b> to stop.</li><li>Press <b>Space</b> to play it back; Space again pauses, Space again picks up where you paused.</li><li>Press <b>Automix</b>. Press <b>B</b> to flip between your raw takes and the finished mix.</li><li><b>Export ▾</b> → WAV or MP3.</li></ol></section>
+        <section id="g-tools"><h3>Edit tools (toolbar, keys 1–4)</h3><ul><li><b>✥ Move (1 / V)</b>: drag a clip left or right. It snaps to the beat grid when <b>Snap</b> is on; hold Alt to place it freely.</li><li><b>⇤ Trim (2)</b>: grab near the start or end of a clip and drag to shorten or lengthen it. Nothing is deleted; drag back to restore.</li><li><b>✂ Cut (3)</b>: click inside a clip to cut it in two at that point. Use it to comp: cut, then pick a different take for each piece.</li><li><b>◢ Fade (4)</b>: drag on the left half of a clip for a fade-in, on the right half for a fade-out.</li><li>Click a clip with any tool to select it. <b>Delete</b> removes it. The orange <b>Clip</b> box in the toolbar sets its volume and fades exactly.</li><li>Click an empty part of the timeline (or the ruler) to move the playhead there.</li></ul></section>
+        <section id="g-record"><h3>Recording, loops and punch-ins</h3><ul><li><b>Count-in</b> plays 1–2 bars of click before recording starts. <b>Click</b> (C) turns the metronome on.</li><li><b>Loop record</b>: drag across the ruler to pick a section, press <b>L</b>, press <b>R</b>. Every time it loops you get a new take.</li><li><b>Punch-in</b>: Shift-drag on the ruler over the part you want to redo (it turns red), press <b>P</b>, press <b>R</b>. It plays a bar or two before, records only that part, plays a bar after, and stops on its own. The fix blends in smoothly.</li><li><b>Takes</b>: the <code>3 ▾</code> chip on a track opens its take lanes. <b>Use</b> puts a whole take on the track; <b>Comp</b> swaps that take into the selected clip; <b>★</b> marks your favourite.</li></ul></section>
+        <section id="g-mixer"><h3>Mixer</h3><p>Each column is one track. <b>Fader</b>: volume (up = louder, double-click = back to 0 dB). <b>Pan</b>: left or right in the speakers. <b>Reverb</b>: how much room sound on that track. <b>Echo</b>: how much tempo-synced delay. <b>M</b> mute, <b>S</b> solo. The <b>Master</b> column turns everything up or down while you listen.</p><p>When you press Automix, the engine balances levels itself; your faders then nudge its choices up or down from there.</p></section>
+        <section id="g-presets"><h3>Presets</h3><ul><li><b>Rap · Upfront</b>: vocal sits on top of the beat, short plate reverb, dotted-1/8 echo. Hard-hitting and clear.</li><li><b>Rap · Spacey</b>: big hall reverb and quarter-note echo for melodic or atmospheric tracks.</li><li><b>Rap · Club loud</b>: mastered loud (−9 LUFS) with a tight room. For club and DJ play.</li><li><b>VO · Dry & clear</b>: voice-over: almost no reverb, no echo, broadcast-friendly level.</li><li><b>Podcast</b>: dry, even, −16 LUFS (the podcast standard).</li><li><b>Tuning presets</b> (Tune tab): <b>Natural</b> fixes notes and keeps your character; <b>Hard-tune</b> gives the robotic effect.</li></ul></section>
+        <section id="g-tune"><h3>Tuning</h3><p><b>Automix tune</b> happens automatically when you press Automix. Choose Off / Natural / Tight / Hard. The key is detected for you, or set it yourself.</p><p><b>Studio tune</b> is the best-quality version. It sends one take to the tuning program on your PC (the backend) and adds a new tuned take; your original stays safe in the take lane. It finds your pitch with an AI pitch tracker (CREPE), snaps each note toward the key, and rebuilds the sound with a vocoder (WORLD) that keeps your voice's tone. Anything it isn't sure about is left exactly as you sang it. The report lists every phrase: teal = tuned, red = left alone.</p><p><b>Retune speed</b> 0 = robot, 40–80 ms = natural. <b>Vibrato keep</b> 100% = keep your wobble. <b>Amount</b> 100% = all the way to the note.</p></section>
+        <section id="g-automix"><h3>Automix (bottom bar)</h3><p>Eight steps run in order: <b>Tune</b> (pitch) → <b>Align</b> (lines doubles up with the lead) → <b>Double</b> (AI stereo doubles if you turned on 2X) → <b>Clean</b> (noise, breaths, pops, harsh S's) → <b>Tone</b> (EQ) → <b>Dynamics</b> (evens out loud and quiet words) → <b>Space</b> (reverb, echo, beat balance) → <b>Master</b> (final loudness). Click any step to switch it off. The <b>Engine</b> tab explains every decision it made.</p></section>
+        <section id="g-keys"><h3>Keys</h3><p><b>Space</b> play / pause / pick up · <b>Enter</b> stop · <b>Home</b> back to start · <b>R</b> record · <b>L</b> loop · <b>P</b> punch · <b>C</b> click · <b>T</b> tap tempo · <b>1–4</b> tools · <b>X</b> cut at playhead · <b>Delete</b> delete clip · <b>M</b> marker · <b>B</b> raw/mix · <b>E</b> export · <b>← →</b> nudge · <b>+ −</b> zoom · <b>F</b> fit · <b>Ctrl+Z</b> undo · <b>?</b> this guide</p></section>
+      </div>
     </div>
     <div class="toast glass" id="toast" role="status" aria-live="polite"></div>
 
