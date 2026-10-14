@@ -1,10 +1,16 @@
-# Static site: publish the repo root.
+# Static PWA: build.mjs copies just the app into dist/.
 [build]
-  publish = "."
-  command = ""
+  command = "node build.mjs"
+  publish = "dist"
 
 [[headers]]
   for = "/*"
   [headers.values]
     Permissions-Policy = "microphone=(self)"
     X-Robots-Tag = "noindex, nofollow"
+    X-Content-Type-Options = "nosniff"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
