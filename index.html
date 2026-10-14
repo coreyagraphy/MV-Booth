@@ -135,12 +135,39 @@
 
         <div class="panel glass rise d3">
           <nav class="tabs" role="tablist">
+            <button data-tab="song" title="Song: the start-to-finish checklist">Song</button>
             <button data-tab="booth" class="on">Booth</button>
-            <button data-tab="mixer">Mixer</button>
+            <button data-tab="clean" title="Clean: noise, breaths, S's, pops, hum and clicks for the selected track">Clean</button>
             <button data-tab="tune">Tune</button>
+            <button data-tab="mixer">Mixer</button>
             <button data-tab="lyrics">Lyrics</button>
             <button data-tab="engine">Engine</button>
           </nav>
+
+          <div class="tab" data-panel="song">
+            <p class="explain">Everything to take a song from nothing to a finished master, in order. Steps tick themselves off as you go; the buttons on each step do it for you. Optional steps can be skipped.</p>
+            <ol class="steps" id="songSteps"></ol>
+          </div>
+
+          <div class="tab" data-panel="clean">
+            <h3>Vocal cleanup · <span id="cleanTrack" class="muted">select a track</span></h3>
+            <p class="explain">These fix the recording itself, before any mixing. <b>Automix uses them automatically</b> on every mix. <b>Preview</b> makes a cleaned copy as a new take so you can compare it with the raw one (take lanes, or <b>B</b> after Automix). Your original is never changed.</p>
+            <label class="field" title="De-noise: removes steady background noise (fan, AC, hiss, room tone). Higher = cleaner but can sound 'underwater' if pushed too far."><span>De-noise · background hiss, fan, room <output id="clDenoiseOut"></output></span><input type="range" id="clDenoise" min="0" max="1" step="0.05" /></label>
+            <label class="field" title="Breaths: the air you take in between lines. Keep = as sung. Reduce = quieter but still natural. Remove = silenced."><span>Breaths · the air between lines</span>
+              <div class="seg small" id="clBreaths"><span class="thumb"></span><button data-v="keep">Keep</button><button data-v="reduce">Reduce</button><button data-v="remove">Remove</button></div>
+            </label>
+            <label class="field" title="De-esser: tames harsh S, SH, T and Z sounds. Higher = smoother, but too much can make you sound lispy."><span>De-esser · harsh S / SH / T sounds <output id="clDeessOut"></output></span><input type="range" id="clDeess" min="0" max="1" step="0.05" /></label>
+            <label class="check" title="Pop filter: catches the low 'thump' of P and B sounds hitting the mic and filters just those moments."><input type="checkbox" id="clPop" /> <span>Pop filter · P and B thumps</span></label>
+            <label class="check" title="De-click: repairs tiny mouth clicks and lip smacks."><input type="checkbox" id="clDeclick" /> <span>De-click · mouth clicks and lip smacks</span></label>
+            <label class="field" title="Hum removal: electrical buzz from cables or lights. 60 Hz in the US, 50 Hz in Europe/UK. Leave Off if you don't hear a buzz."><span>Hum removal · electrical buzz</span>
+              <div class="seg small" id="clHum"><span class="thumb"></span><button data-v="off">Off</button><button data-v="60">60 Hz (US)</button><button data-v="50">50 Hz (EU)</button></div>
+            </label>
+            <div class="row">
+              <button id="btnCleanPreview" class="btn" title="Make a cleaned copy of the selected take as a new take you can compare">Preview: make a cleaned take</button>
+              <button id="btnCleanAll" class="btn" title="Copy these cleanup settings to every vocal track">Use on all vocal tracks</button>
+            </div>
+            <div id="cleanReport" class="report"></div>
+          </div>
 
           <div class="tab on" data-panel="booth">
             <label class="field"><span>Microphone</span><select id="micSelect"><option value="">Default input</option></select></label>
@@ -187,6 +214,13 @@
               <label class="field"><span>Delay</span><select id="delaySel"><option value="auto">Auto</option><option value="1/4">1/4</option><option value="1/8.">Dotted 1/8</option><option value="1/8">1/8</option><option value="1/16">1/16</option><option value="off">Off</option></select></label>
             </div>
             <label class="field"><span>Space amount <output id="spaceOut">100%</output></span><input type="range" id="space" min="0" max="2" step="0.05" /></label>
+            <h3>Master (final polish)</h3>
+            <p class="explain">The last step on the whole song. <b>Tone</b> tilts the overall sound: warm = fuller low end, bright = more sparkle. <b>Width</b> makes the stereo image narrower or wider (100% = as mixed). <b>Ceiling</b> is the loudest peak allowed; −1 dB is safest for streaming.</p>
+            <div class="pair">
+              <label class="field" title="Master tone: a gentle overall EQ tilt on the finished mix"><span>Tone</span><select id="masterTone"><option value="neutral">Neutral</option><option value="warm">Warm</option><option value="bright">Bright</option><option value="dark">Dark / vintage</option></select></label>
+              <label class="field" title="Ceiling: the highest true peak allowed in the export"><span>Ceiling</span><select id="ceiling"><option value="-1">−1.0 dBTP (streaming)</option><option value="-0.3">−0.3 dBTP (loud)</option><option value="-2">−2.0 dBTP (extra safe)</option></select></label>
+            </div>
+            <label class="field" title="Stereo width of the final master. 0% = mono, 100% = as mixed, 150% = extra wide."><span>Width <output id="widthOut">100%</output></span><input type="range" id="width" min="0" max="1.5" step="0.05" /></label>
           </div>
 
           <div class="tab" data-panel="tune">

@@ -1,4 +1,4 @@
-import { FX, MODES, ROLES, DELAYS, REVERBS, estimateBpm, makeImpulse } from "./automix.js";
+import { CLEAN_DEFAULTS, FX, MODES, ROLES, DELAYS, REVERBS, estimateBpm, makeImpulse, renderVocal } from "./automix.js";
 import { STAGES, renderStem, runEngine } from "./engine.js";
 import { Metronome, TapTempo, barBeat, barSeconds, snapTime } from "./metro.js";
 import { encodeMp3 } from "./mp3.js";
@@ -974,7 +974,8 @@ function engineInputs() {
     const buffer = ctx.createBuffer(1, r.data.length, FS);
     buffer.copyToChannel(r.data, 0);
     const studioTuned = t.clips.every((c) => takeOf(t, c.takeId)?.tuned);
-    tracks.push({ id: t.id, name: t.name, role: t.type, buffer, offset: r.offset, pan: t.pan, fx: t.fx, tune: t.tune && !studioTuned, dbl: t.dbl, trimDb: t.volumeDb, revSend: t.revSend, dlySend: t.dlySend, mute: false });
+    const preCleaned = t.clips.every((c) => takeOf(t, c.takeId)?.cleaned);
+    tracks.push({ id: t.id, name: t.name, role: t.type, buffer, offset: r.offset, pan: t.pan, fx: t.fx, tune: t.tune && !studioTuned, dbl: t.dbl, clean: preCleaned ? NO_CLEAN : cleanOf(t), trimDb: t.volumeDb, revSend: t.revSend, dlySend: t.dlySend, mute: false });
   }
   const b = session.beat && audio.get(session.beat.id) ? { ...session.beat, buffer: audio.get(session.beat.id) } : null;
   return { tracks, beat: b && !b.mute ? b : null };
@@ -1023,6 +1024,7 @@ async function automix() {
     updateChips();
     setAB("B");
     renderReport();
+    renderSong();
     drawPitch();
     showTab("engine");
     status(`Mixed in ${((performance.now() - t0) / 1000).toFixed(1)}s · ${run.mix.lufs.toFixed(1)} LUFS · true peak ${(run.mix.truePeak ?? run.mix.peak).toFixed(1)} dBTP · B to compare`);
@@ -1041,6 +1043,150 @@ async function automix() {
     document.body.classList.remove("busy");
     $("btnCancel").hidden = true;
   }
+}
+
+// ---------------------------------------------------------------- vocal cleanup (Clean tab)
+const NO_CLEAN = { denoise: 0, breaths: "keep", deess: 0, pop: false, declick: false, hum: "off" };
+const cleanOf = (t) => (t.clean = { ...CLEAN_DEFAULTS, ...(t.clean || {}) });
+function renderCleanTab() {
+  const t = trackById(ui.selTrack);
+  $("cleanTrack").textContent = t ? t.name : "select a track";
+  const on = !!t;
+  for (const id of ["clDenoise", "clDeess", "clPop", "clDeclick", "btnCleanPreview", "btnCleanAll"]) $(id).disabled = !on;
+  if (!t) return;
+  const c = cleanOf(t);
+  $("clDenoise").value = c.denoise;
+  $("clDenoiseOut").textContent = c.denoise <= 0.02 ? "off" : `${Math.round(c.denoise * 100)}%`;
+  $("clDeess").value = c.deess;
+  $("clDeessOut").textContent = c.deess <= 0.02 ? "off" : `${Math.round(c.deess * 100)}%`;
+  $("clPop").checked = !!c.pop;
+  $("clDeclick").checked = !!c.declick;
+  setSeg("clBreaths", "v", c.breaths);
+  setSeg("clHum", "v", c.hum);
+  const k = t.takes.find((x) => x.cleaned && t.clips.some((cl) => cl.takeId === x.id));
+  $("cleanReport").innerHTML = k?.cleanReport ? `<section><h4>${esc(k.name)}</h4><ul>${k.cleanReport.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></section>` : "";
+}
+function cleanEdit(label, key, fn) {
+  const t = trackById(ui.selTrack);
+  if (!t) return;
+  history.push(session, `${t.name}: ${label}`, `clean:${key}:${t.id}`);
+  fn(cleanOf(t));
+  t.cleanReviewed = true;
+  markStale();
+  save();
+  updateUndo();
+  renderCleanTab();
+  renderSong();
+}
+async function previewClean() {
+  const t = trackById(ui.selTrack);
+  if (!t) return toast("Select a track first.");
+  const src = studioSourceTake(t);
+  if (!src || !audio.get(src.id)) return toast("That track has no take to clean.");
+  const x = audio.get(src.id).getChannelData(0);
+  $("btnCleanPreview").disabled = true;
+  try {
+    status(`Cleaning ${src.name}…`);
+    const r = await renderVocal({ role: t.type, fx: "clean" }, x, FS, session.mode, (p) => status(`Cleaning ${src.name}… ${Math.round(p * 100)}%`), {
+      stages: { clean: true, tone: false, dynamics: false }, clean: cleanOf(t),
+    });
+    const y = r.buffer.getChannelData(0);
+    // Match the cleaned take's level to the original so the comparison is fair.
+    let ex = 0, ey = 0;
+    for (let i = 0; i < x.length; i++) {
+      ex += x[i] * x[i];
+      ey += y[i] * y[i];
+    }
+    const g = Math.sqrt(ex / Math.max(ey, 1e-12));
+    const out = new Float32Array(x.length);
+    for (let i = 0; i < x.length; i++) out[i] = clamp(y[i] * g, -1, 1);
+    const buffer = ctx.createBuffer(1, out.length, FS);
+    buffer.copyToChannel(out, 0);
+    const take = { id: S.uid(), name: `${src.name.replace(/ · clean$/, "")} · clean`, at: src.at, duration: buffer.duration, best: false, transcript: src.transcript || "", cleaned: true, cleanedFrom: src.id, tuned: src.tuned, cleanReport: r.report.filter((l) => !/^(Voice:|Tone EQ|Vocal rider|Compressor)/.test(l)) };
+    audio.set(take.id, buffer);
+    saveAudio(take.id, buffer);
+    edit(`Clean ${src.name}`, () => {
+      t.takes.push(take);
+      for (const c of t.clips) if (c.takeId === src.id) c.takeId = take.id;
+      t.showTakes = true;
+      t.cleanReviewed = true;
+    });
+    renderCleanTab();
+    status(`Cleaned ${src.name} → "${take.name}" is on the track; the raw take is still in the lane. Press Space to listen, or click "Use" on the raw take to compare.`);
+  } catch (err) {
+    console.error(err);
+    toast(`Cleanup failed: ${err.message}`);
+  } finally {
+    $("btnCleanPreview").disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------- song checklist
+function songSteps() {
+  const vocals = session.tracks.filter((t) => t.takes.length);
+  const anyTake = (f) => session.tracks.some((t) => t.takes.some(f));
+  return [
+    { t: "Beat", d: "Import your instrumental. Tempo is detected so bars, click and echo line up.", done: !!session.beat, acts: [["Import beat", () => $("fileBeat").click()]] },
+    { t: "Song sections", d: "Mark where the intro, verses and hooks start (moves the playhead there first).", opt: true, done: session.markers.length >= 2,
+      acts: ["Intro", "Verse", "Hook", "Bridge", "Outro"].map((n) => [n, () => addMarker(n)]) },
+    { t: "Record vocals", d: "Add a Lead track, arm it, press R. Use loop record for several passes, punch-in to fix a line.", done: vocals.length > 0,
+      acts: [["Add lead", () => addTrackOfType("lead")], ["Record (R)", () => toggleRecord()]] },
+    { t: "Comp the best takes", d: "Open a track's take lanes, cut with the Cut tool, and pick the best take for each part (Comp / Use, ★).", opt: true,
+      done: anyTake((k) => k.best) || session.tracks.some((t) => t.clips.length > 1), acts: [["Show takes", () => showTakesOfSelected()]] },
+    { t: "Clean the vocals", d: "De-noise, breaths, de-ess, pop filter, hum, clicks. Automix uses these, or make a cleaned take now.", done: anyTake((k) => k.cleaned) || session.tracks.some((t) => t.cleanReviewed),
+      acts: [["Open Clean", () => showTab("clean")]] },
+    { t: "Tune", d: "Pick Natural / Tight / Hard for Automix, or Studio-tune a take on the backend for the best quality.", done: anyTake((k) => k.tuned) || (S_().tuneStyle !== "off" && !!ui.master),
+      acts: [["Open Tune", () => showTab("tune")]] },
+    { t: "Doubles & ad-libs", d: "Record a Double and Ad-lib track, or click 2X on the lead for AI doubles.", opt: true,
+      done: session.tracks.some((t) => t.type !== "lead" && t.takes.length) || session.tracks.some((t) => t.dbl && t.dbl !== "off"),
+      acts: [["Add double", () => addTrackOfType("double")], ["Add ad-lib", () => addTrackOfType("adlib")]] },
+    { t: "Mix", d: "Pick a mix preset, then Automix. Press B to compare raw vs mix; nudge faders and Automix again.", done: !!ui.master && !ui.stale,
+      acts: [["Presets", () => showTab("mixer")], ["Automix", () => automix()]] },
+    { t: "Master", d: "Loudness target, tone, width and ceiling for the final file (Mixer tab → Master). Automix applies them.", done: !!ui.master && !ui.stale && S_().stages.master,
+      acts: [["Open master", () => showTab("mixer")]] },
+    { t: "Export", d: "WAV for distribution, MP3 to share, stems for anyone mixing it further.", done: !!ui.exported,
+      acts: [["WAV", () => exportAs("wav")], ["MP3", () => exportAs("mp3")]] },
+  ];
+}
+function renderSong() {
+  const ol = $("songSteps");
+  if (!ol) return;
+  const steps = songSteps();
+  const next = steps.findIndex((x) => !x.done && !x.opt);
+  ol.innerHTML = "";
+  steps.forEach((st, i) => {
+    const li = document.createElement("li");
+    li.className = `${st.done ? "done" : ""}${i === next ? " next" : ""}`;
+    const txt = document.createElement("div");
+    txt.innerHTML = `<b>${esc(st.t)}${st.opt ? '<span class="opt">OPTIONAL</span>' : ""}</b><small>${esc(st.d)}</small>`;
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    for (const [label, fn] of st.acts) {
+      const b = Object.assign(document.createElement("button"), { textContent: label });
+      b.onclick = () => Promise.resolve(fn()).then(renderSong);
+      acts.append(b);
+    }
+    li.append(txt, acts);
+    ol.append(li);
+  });
+}
+function addTrackOfType(type) {
+  edit("Add track", () => {
+    const t = S.newTrack(session, type);
+    session.tracks.forEach((x) => (x.armed = false));
+    t.armed = true;
+    session.tracks.push(t);
+    ui.selTrack = t.id;
+  }, { audioChange: false });
+  status(`Added and armed ${trackById(ui.selTrack).name}. Press R to record.`);
+}
+function showTakesOfSelected() {
+  const t = trackById(ui.selTrack) || session.tracks.find((x) => x.takes.length);
+  if (!t) return toast("Record something first.");
+  edit("Show takes", () => {
+    t.showTakes = true;
+    ui.selTrack = t.id;
+  }, { audioChange: false });
 }
 
 // ---------------------------------------------------------------- studio tune (backend)
@@ -1140,6 +1286,8 @@ async function exportAs(kind) {
   }
   if (!ui.master || ui.stale) return toast(ui.master ? "The mix is out of date. Run Automix first." : "Run Automix first, then export.");
   const base = `MVBooth_${safe(session.name)}_${stamp()}`;
+  ui.exported = true;
+  setTimeout(renderSong, 0);
   if (kind === "wav") download(encodeWav(await resample(ui.master, rate)), `${base}.wav`);
   else if (kind === "mp3") {
     status("Encoding MP3…");
@@ -2222,6 +2370,8 @@ function renderAll() {
   $("btnSnap").classList.toggle("on", !!S_().snap);
   renderLanes();
   renderStrips();
+  renderCleanTab();
+  renderSong();
   updateClipInsp();
   updateChips();
   applyMixer();
@@ -2272,6 +2422,10 @@ function bindSettingsToUi() {
   set("bpm", s.bpm || 0);
   set("countIn", String(s.countIn ?? 1));
   set("preRoll", String(s.preRoll ?? 1));
+  set("masterTone", s.masterTone || "neutral");
+  set("ceiling", String(s.ceiling ?? -1));
+  set("width", s.width ?? 1);
+  $("widthOut").textContent = `${Math.round((s.width ?? 1) * 100)}%`;
   const st = s.studio;
   set("stRetune", st.retuneMs);
   $("stRetuneOut").textContent = st.retuneMs === 0 ? "0 ms · robot" : `${st.retuneMs} ms`;
@@ -2324,6 +2478,8 @@ function bindControls() {
   document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
     showTab(b.dataset.tab);
     if (b.dataset.tab === "mixer") renderStrips();
+    if (b.dataset.tab === "song") renderSong();
+    if (b.dataset.tab === "clean") renderCleanTab();
   }));
   $("btnPlay").onclick = () => (ui.recording ? finishRecording() : ui.playing ? pause() : startPlayback());
   $("btnStop").onclick = stop;
@@ -2372,6 +2528,24 @@ function bindControls() {
   $("btnHardPreset").onclick = preset("Hard-tune preset", { retuneMs: 0, vibrato: 0, amount: 1 });
   $("btnNaturalPreset").onclick = preset("Natural preset", { retuneMs: 60, vibrato: 0.8, amount: 1 });
   $("btnStudioTune").onclick = studioTune;
+  $("clDenoise").oninput = (e) => cleanEdit("De-noise", "dn", (c) => (c.denoise = +e.target.value));
+  $("clDeess").oninput = (e) => cleanEdit("De-esser", "ds", (c) => (c.deess = +e.target.value));
+  $("clPop").onchange = (e) => cleanEdit("Pop filter", "pop", (c) => (c.pop = e.target.checked));
+  $("clDeclick").onchange = (e) => cleanEdit("De-click", "dc", (c) => (c.declick = e.target.checked));
+  document.querySelectorAll("#clBreaths button").forEach((b) => (b.onclick = () => cleanEdit("Breaths", "br", (c) => (c.breaths = b.dataset.v))));
+  document.querySelectorAll("#clHum button").forEach((b) => (b.onclick = () => cleanEdit("Hum removal", "hum", (c) => (c.hum = b.dataset.v))));
+  $("btnCleanPreview").onclick = previewClean;
+  $("btnCleanAll").onclick = () => {
+    const t = trackById(ui.selTrack);
+    if (!t) return;
+    edit("Cleanup on all tracks", () => session.tracks.forEach((x) => {
+      x.clean = { ...cleanOf(t) };
+      x.cleanReviewed = true;
+    }));
+    toast("Cleanup settings copied to every vocal track.");
+  };
+  $("masterTone").onchange = (e) => edit("Master tone", () => (S_().masterTone = e.target.value), { redraw: false });
+  $("ceiling").onchange = (e) => edit("Ceiling", () => (S_().ceiling = +e.target.value), { redraw: false });
   $("backendUrl").onchange = (e) => {
     edit("Backend address", () => (S_().backendUrl = e.target.value.trim()), { audioChange: false, redraw: false });
     checkBackend();
@@ -2394,7 +2568,7 @@ function bindControls() {
   $("btnRedo").onclick = redo;
   $("btnSplit").onclick = splitAtPlayhead;
   $("btnDelClip").onclick = deleteClip;
-  $("btnMarker").onclick = addMarker;
+  $("btnMarker").onclick = () => addMarker();
   $("btnZoomIn").onclick = () => zoom(1.5);
   $("btnZoomOut").onclick = () => zoom(1 / 1.5);
   $("btnFit").onclick = fitView;
@@ -2438,6 +2612,7 @@ function bindControls() {
   range("space", "space", "spaceOut", (v) => `${Math.round(v * 100)}%`, { after: applyMixer });
   range("latency", "latencyMs", "latencyOut", (v) => `${v > 0 ? "+" : ""}${v} ms`, { audioChange: false, after: updateRoundTrip });
   range("tight", "alignTight", "tightOut", (v) => `${Math.round(v * 100)}%`);
+  range("width", "width", "widthOut", (v) => `${Math.round(v * 100)}%`);
   range("scrollSpeed", "scroll", null, null, { audioChange: false });
   range("clickLevel", "clickLevel", null, null, { audioChange: false, after: () => (metro.level = S_().clickLevel) });
   range("inGain", "inputGainDb", "inGainOut", (v) => (v <= -60 ? "−∞ dB" : `${v > 0 ? "+" : ""}${v} dB`), {
@@ -2682,9 +2857,14 @@ function bindControls() {
   });
   navigator.mediaDevices?.addEventListener?.("devicechange", listDevices);
 }
-function addMarker() {
+function addMarker(name) {
   const t = currentPos();
-  edit("Add marker", () => session.markers.push({ t, name: `M${session.markers.length + 1}` }), { audioChange: false });
+  const label = typeof name === "string" ? name : `M${session.markers.length + 1}`;
+  edit(`Add marker ${label}`, () => {
+    session.markers.push({ t, name: label });
+    session.markers.sort((a, b) => a.t - b.t);
+  }, { audioChange: false });
+  status(`Marker "${label}" at ${fmtTime(t)}. Move the playhead and add the next section.`);
 }
 
 // ---------------------------------------------------------------- app shell + boot

@@ -10,7 +10,7 @@ export const DEFAULT_SETTINGS = {
   targetLufs: -14, balance: 0, space: 1, bpm: 0, latencyMs: 0, prompter: true, transcribe: false, scroll: 18,
   tuneStyle: "natural", key: "auto", scale: "minor", alignDoubles: true, alignTight: 0.9,
   reverb: "auto", delayDiv: "auto", click: false, clickLevel: 0.6, countIn: 1, snap: true, inputGainDb: 0,
-  exportRate: 48000, preRoll: 1,
+  exportRate: 48000, preRoll: 1, masterTone: "neutral", width: 1, ceiling: -1,
   backendUrl: "http://127.0.0.1:8765",
   studio: { retuneMs: 60, vibrato: 0.8, amount: 1, formant: true, minConf: 0.5, model: "full" },
   stages: { tune: true, align: true, double: true, clean: true, tone: true, dynamics: true, space: true, master: true },

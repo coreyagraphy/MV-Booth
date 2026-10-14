@@ -23,6 +23,7 @@ import {
   smoothCurve,
   tick,
   truePeak,
+  declick,
 } from "./dsp.js";
 
 export const MODES = {
@@ -84,12 +85,12 @@ const HOP = 512; // analysis hop (~10.7 ms @ 48 kHz)
 
 // ---------------------------------------------------------------- 1. analysis
 
-export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false } = {}) {
+export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, nrFloorDb = null } = {}) {
   const preset = MODES[mode];
   const nr = skipNR
     ? { out: raw, snrDb: NaN, applied: false, reductionDb: 0 }
     : await denoise(raw, fs, {
-        floorDb: preset.nrFloorDb,
+        floorDb: nrFloorDb ?? preset.nrFloorDb,
         onProgress: (p) => onProgress?.(p * 0.6),
       });
   const x = nr.out;
@@ -261,7 +262,7 @@ function decideEq(an, mode, role, profile) {
   };
 }
 
-function gainCurve(an, fs, mode, { gate = true, ride: doRide = true } = {}) {
+function gainCurve(an, fs, mode, { gate = true, ride: doRide = true, breathDb = null } = {}) {
   const preset = MODES[mode];
   const env = loudnessEnvelope(an.clean, fs, HOP, 0.3);
   const activeLoud = [];
@@ -276,7 +277,7 @@ function gainCurve(an, fs, mode, { gate = true, ride: doRide = true } = {}) {
       rideMin = Math.min(rideMin, ride);
       rideMax = Math.max(rideMax, ride);
     } else {
-      curve[f] = gate ? (an.breath[f] ? preset.breathDb : preset.gateDb) : 0;
+      curve[f] = gate ? (an.breath[f] ? breathDb ?? preset.breathDb : preset.gateDb) : 0;
     }
   }
   // Open ~30 ms early, rise in ~20 ms, fall in ~90 ms.
@@ -330,14 +331,18 @@ function curveToGain(curveDb, extraDb = 0) {
 }
 
 /** Render the processed, panned vocal for one track. */
-export async function renderVocal(track, raw, fs, mode, onProgress, { profile, stages = {} } = {}) {
+export async function renderVocal(track, raw, fs, mode, onProgress, { profile, stages = {}, clean = null } = {}) {
   const st = { clean: true, tone: true, dynamics: true, ...stages };
-  const an = await analyseVocal(raw, fs, mode, (p) => onProgress?.(p * 0.85), { skipNR: !st.clean });
+  const cl = cleanOptions(clean, mode);
+  let clicks = 0;
+  if (st.clean && cl.declick) ({ out: raw, clicks } = declick(raw, fs));
+  const an = await analyseVocal(raw, fs, mode, (p) => onProgress?.(p * 0.85), { skipNR: !st.clean || !cl.denoise, nrFloorDb: cl.nrFloorDb });
   const preset = MODES[mode];
   const role = ROLES[track.role] ? track.role : "lead";
   const eq = st.tone ? decideEq(an, mode, role, profile) : { hpf: 30, mud: 0, box: 0, presence: 0, air: 0 };
-  const ride = gainCurve(an, fs, mode, { gate: st.clean, ride: st.dynamics });
-  const ds = deessCurve(an, mode, ROLES[role].deessMult);
+  const ride = gainCurve(an, fs, mode, { gate: st.clean, ride: st.dynamics, breathDb: cl.breathDb });
+  const ds = deessCurve(an, mode, ROLES[role].deessMult * cl.deessMult);
+  if (!cl.pop) an.plosives = 0;
   if (!st.clean) {
     ds.curve.fill(0);
     an.plosives = 0;
@@ -366,6 +371,7 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile, s
     nodes.push(n);
     return n;
   };
+  if (st.clean && cl.hum) for (let hN = 1; hN <= 4; hN++) biq("notch", cl.hum * hN, 30);
   biq("highpass", eq.hpf, 0.707);
   biq("highpass", eq.hpf, 0.707);
   const pop = biq("highpass", 20, 0.8);
@@ -451,13 +457,15 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile, s
       `Voice: F0 ≈ ${Math.round(an.f0Median)} Hz → low cut ${eq.hpf} Hz (24 dB/oct)`,
       `Tone EQ: 250 Hz ${fmt(eq.mud)} · 500 Hz ${fmt(eq.box)} · 3.2 kHz ${fmt(eq.presence)} · air ${fmt(eq.air)}`,
       `De-ess: ${ds.events} events @ ${(an.sibCentre / 1000).toFixed(1)} kHz, deepest ${ds.maxCut.toFixed(1)} dB`,
-      `Breaths tamed: ${an.breaths} (${preset.breathDb} dB) · gaps gated ${preset.gateDb} dB`,
-      `Plosives caught: ${an.plosives} (dynamic 260 Hz high-pass on each pop)`,
+      `Breaths: ${an.breaths} found → ${cl.breathDb >= 0 ? "kept as sung" : cl.breathDb <= -30 ? "removed" : `lowered ${cl.breathDb} dB`} · gaps gated ${preset.gateDb} dB`,
+      cl.pop ? `Pop filter: ${an.plosives} plosive(s) caught (dynamic 260 Hz high-pass on each pop)` : "Pop filter: off",
+      ...(cl.declick ? [clicks ? `De-click: ${clicks} mouth click(s) repaired` : "De-click: no mouth clicks found, audio untouched"] : []),
+      ...(cl.hum ? [`Hum removal: ${cl.hum} Hz + 3 harmonics notched`] : []),
       `Vocal rider: ${ride.rideMin.toFixed(1)} … +${ride.rideMax.toFixed(1)} dB automation`,
       `Compressor: ${ratio}:1 @ ${threshold.toFixed(1)} dB${preset.grit ? ` + ${Math.round(preset.grit * 100)}% parallel grit` : ""}`,
       ...(track.fx === "phone" ? ["FX: phone band-pass 480 Hz–3.1 kHz + drive"] : []),
     ].filter((line) => {
-      if (!st.clean && /^(Noise reduction|De-ess|Breaths|Plosives)/.test(line)) return false;
+      if (!st.clean && /^(Noise reduction|De-ess|Breaths|Pop filter|De-click|Hum)/.test(line)) return false;
       if (!st.tone && /^(Voice:|Tone EQ)/.test(line)) return false;
       if (!st.dynamics && /^(Vocal rider|Compressor)/.test(line)) return false;
       return true;
@@ -466,6 +474,22 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile, s
 }
 
 const fmt = (v) => `${v > 0 ? "+" : ""}${v} dB`;
+
+/** Per-track vocal cleanup settings (Clean tab) → chain parameters. */
+export const CLEAN_DEFAULTS = { denoise: 0.6, breaths: "reduce", deess: 0.6, pop: true, hum: "off", declick: true };
+export function cleanOptions(clean, mode) {
+  const c = { ...CLEAN_DEFAULTS, ...(clean || {}) };
+  const preset = MODES[mode];
+  return {
+    denoise: c.denoise > 0.02,
+    nrFloorDb: c.denoise > 0.02 ? -4 - 22 * c.denoise : null, // 0.6 → −17 dB floor
+    breathDb: c.breaths === "keep" ? 0 : c.breaths === "remove" ? -40 : preset.breathDb,
+    deessMult: c.deess / CLEAN_DEFAULTS.deess,
+    pop: !!c.pop,
+    hum: c.hum === "50" ? 50 : c.hum === "60" ? 60 : 0,
+    declick: !!c.declick,
+  };
+}
 
 // ---------------------------------------------------------------- 3. mix + master
 
@@ -661,30 +685,52 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
   glue.attack.value = 0.03;
   glue.release.value = 0.2;
   glue.knee.value = 8;
+  // Master tone: gentle shelves before the glue compressor.
+  const TONES = { neutral: [0, 0], warm: [1.5, -1], bright: [-0.5, 2], dark: [1, -2.5] };
+  const [lowDb, highDb] = TONES[settings.masterTone] || TONES.neutral;
+  const lowS = ctx.createBiquadFilter();
+  lowS.type = "lowshelf";
+  lowS.frequency.value = 120;
+  lowS.gain.value = lowDb;
+  const highS = ctx.createBiquadFilter();
+  highS.type = "highshelf";
+  highS.frequency.value = 8000;
+  highS.gain.value = highDb;
   if (only) bus.connect(ctx.destination);
-  else bus.connect(glue).connect(ctx.destination);
+  else bus.connect(lowS).connect(highS).connect(glue).connect(ctx.destination);
   const rendered = await ctx.startRendering();
   if (only) return { buffer: rendered, notes };
 
   // Master: loudness normalise + look-ahead limit, measured twice.
   await tick();
   const chans = [rendered.getChannelData(0), rendered.getChannelData(1)];
+  // Stereo width (mid/side): 1 = as mixed, 0 = mono, up to 1.5 = wider.
+  const width = clamp(settings.width ?? 1, 0, 1.5);
+  if (width !== 1) {
+    for (let i = 0; i < chans[0].length; i++) {
+      const m = (chans[0][i] + chans[1][i]) / 2;
+      const sd = ((chans[0][i] - chans[1][i]) / 2) * width;
+      chans[0][i] = m + sd;
+      chans[1][i] = m - sd;
+    }
+  }
   const pre1 = integratedLoudness(chans, fs);
   const target = settings.targetLufs ?? -14;
   const gain = !stages.master ? dbToLin(settings.masterDb || 0) : Number.isFinite(pre1) ? dbToLin(target - pre1) : 1;
   const gained = chans.map((c) => c.map((v) => v * gain));
   // Limit, then iterate: true peak must sit at or under −1 dBTP and (when the
   // master stage is on) integrated loudness must land within 0.3 LU of target.
-  let ceiling = -1;
+  const ceilTarget = settings.ceiling ?? -1;
+  let ceiling = ceilTarget;
   let g2 = 1;
   let lim = limit(gained, fs, ceiling);
   let post = integratedLoudness(lim.channels, fs);
   let tp = linToDb(truePeak(lim.channels));
   for (let i = 0; i < 10; i++) {
-    const tpOver = tp > -1;
+    const tpOver = tp > ceilTarget;
     const loudOff = stages.master && Number.isFinite(post) && Math.abs(target - post) > 0.2;
     if (!tpOver && !loudOff) break;
-    if (tpOver) ceiling -= tp + 1 + 0.05;
+    if (tpOver) ceiling -= tp - ceilTarget + 0.05;
     if (loudOff) g2 *= dbToLin(target - post);
     lim = limit(gained.map((c) => c.map((v) => v * g2)), fs, ceiling);
     post = integratedLoudness(lim.channels, fs);
@@ -696,7 +742,7 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
   master.copyToChannel(lim.channels[1], 1);
   const peak = linToDb(samplePeak(lim.channels));
   notes.push(
-    `Glue: 1.8:1 bus compression, 30 ms attack`,
+    `Glue: 1.8:1 bus compression, 30 ms attack · tone ${settings.masterTone || "neutral"} · width ${Math.round(width * 100)}% · ceiling ${ceilTarget} dBTP`,
     stages.master
       ? `Master: ${post.toFixed(1)} LUFS integrated (target ${target}), true peak ${tp.toFixed(1)} dBTP, limiter max −${lim.maxReductionDb.toFixed(1)} dB`
       : `Master stage off: fader ${(settings.masterDb || 0).toFixed(1)} dB + safety limiter · ${post.toFixed(1)} LUFS, true peak ${tp.toFixed(1)} dBTP`,

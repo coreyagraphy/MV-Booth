@@ -417,3 +417,17 @@ body.recording .stage { box-shadow: 0 0 0 2px rgba(255, 59, 74, 0.7), 0 0 40px r
 .brand b { font-size: 13px; letter-spacing: 0.14em; }
 @media (max-width: 1700px) { #chipKey { display: none; } }
 @media (max-width: 1480px) { .seg button { padding: 7px 10px; } .bar { flex-wrap: wrap; } }
+
+.tabs button { font-size: 9px; letter-spacing: 0.04em; padding: 9px 2px; }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; counter-reset: st; }
+.steps li { counter-increment: st; display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center; padding: 9px 10px; border-radius: 12px; border: 1px solid var(--edge); background: rgba(0, 0, 0, 0.3); }
+.steps li::before { content: counter(st); width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 600 11px var(--mono); border: 1px solid var(--edge-hi); color: var(--dim); }
+.steps li.done::before { content: "✓"; background: var(--teal); color: #04110f; border-color: var(--teal); }
+.steps li.next { border-color: rgba(255, 122, 26, 0.55); box-shadow: 0 0 18px -6px rgba(255, 122, 26, 0.6); }
+.steps li.next::before { border-color: var(--orange); color: var(--orange); }
+.steps b { display: block; font-size: 12.5px; }
+.steps small { color: var(--dim); font-size: 11px; line-height: 1.4; display: block; }
+.steps .opt { font: 600 9px var(--mono); color: var(--faint); letter-spacing: 0.1em; margin-left: 6px; }
+.steps .acts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 120px; }
+.steps .acts button { padding: 5px 8px; border-radius: 7px; border: 1px solid var(--edge); background: rgba(0, 0, 0, 0.4); font-size: 11px; }
+.steps li.next .acts button:first-child { border-color: rgba(255, 122, 26, 0.6); color: var(--amber); }

@@ -1,4 +1,4 @@
-# MV Booth 2.1: DAW-parity spec
+# MV Booth 2.4: DAW-parity spec
 
 Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked against what a typical DAW gives a vocal session (Pro Tools, Logic, LUNA, Studio One). Status is what ships in this repo now. **Built** means implemented and covered by the browser test run below.
 
@@ -15,7 +15,8 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Loop playback over a region | partial | **Built**: drag on the ruler to set it, L toggles, sample-accurate pass scheduling |
 | Loop record → one take per pass | ✓ | **Built**: a stopped-early final pass is kept as a take but not put on the track |
 | Nudge playhead (beat / bar) | ✓ | **Built**: ← → (Shift = bar) |
-| Markers | ✗ | **Built**: M adds; click on the ruler jumps; double-click renames or deletes |
+| Markers | ✗ | **Built**: M adds; click on the ruler jumps; double-click renames or deletes; Song tab drops named Intro/Verse/Hook/Bridge/Outro markers |
+| Guided start-to-finish song workflow | ✗ | **Built (2.4)**: Song tab checklist (10 steps, auto-ticks, highlights the next step) |
 | Punch in/out with pre-roll / post-roll | ✗ | **Built (2.2)**: Shift-drag or selection sets the range (red), P arms, 1–2 bar pre-roll, sample-exact latency-compensated capture, 1 bar post-roll, auto-stop, new take + 10 ms crossfades |
 | Tempo map / time-signature changes | ✗ | Not built (fixed 4/4, one tempo) |
 
@@ -54,6 +55,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Separate reverb and delay sends per track | ✓ | **Built**: also drive the engine mix |
 | Reverb types / tempo-synced delay division | ✓ (1.2–2.8 s) | **Built**: Booth 0.35, Room 0.8, Plate 1.6, Hall 2.6 s; delay 1/4, dotted 1/8 (default), 1/8, 1/16 |
 | Master fader + limiter | ✓ | **Built**: live −1 dB limiter; exports use the true-peak mastering chain |
+| Master tone / width / ceiling | ✗ | **Built (2.4)**: tone tilt (neutral, warm, bright, dark), mid/side width 0–150 %, ceiling −0.3/−1/−2 dBTP |
 | Vocal-vs-beat macro | ✓ (±12) | **Built**: ±12 dB, plus the beat fader |
 | Insert FX you can tweak (EQ/comp per track) | ✗ | Engine decides; manual inserts not built (FX: Clean / Phone / Wide) |
 | Automation lanes (volume/pan over time) | ✗ | Engine writes the vocal-rider automation (shown on the lane); manual automation not built |
@@ -68,7 +70,8 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Pitch correction with strength, key/scale, formant keep, vibrato keep | ✓ (WASM or backend) | **Built both ways**: in-browser YIN + PSOLA inside Automix, and **Studio tune (2.2)**: local backend, CREPE + WORLD, per-region confidence, low-confidence regions left untouched, result as a new take |
 | Align doubles to the lead | ✓ (quantize) | **Built**: DTW + WSOLA timing, PSOLA pitch-match |
 | Double stage: detune, delay, −6 dB, or use the recorded double | ✓ | **Built**: ±9–11 cents, drifting 19–27 ms, optional octave |
-| Breath control | ✓ | **Built** |
+| Breath control | ✓ | **Built**: keep / reduce / remove per track (2.4) |
+| Vocal cleanup you can set (de-noise, de-ess, pop filter, de-click, hum) | ✗ | **Built (2.4)**: Clean tab per track; preview renders a non-destructive "· clean" take. De-click = isolated-spike detector + least-squares AR interpolation, reverted where it can't predict |
 | RAW / MIX A/B | ✓ | **Built**: B key |
 
 ### Metering & loudness
@@ -109,7 +112,7 @@ session { id, name, mode, settings{…, stages{tune…master}}, lyrics, markers[
 
 A clip plays take audio at source time `t − shift − take.at` for timeline `t` in `[start, end)`. Moving a clip shifts `start`, `end` and `shift` together. Comping swaps `takeId`. Audio lives in IndexedDB under `audio:<takeId>`.
 
-## 4. Verification (2.1 suite; 2.2 adds the punch and studio-tune suites)
+## 4. Verification (2.1 suite; 2.2 adds the punch and studio-tune suites; 2.4 adds the song/clean suite)
 
 The browser test drives the real UI in headless Chromium with a simulated mic. Twenty-four checks pass with zero page errors:
 - beat import + BPM detect, arm, ruler loop drag
@@ -120,6 +123,8 @@ The browser test drives the real UI in headless Chromium with a simulated mic. T
 - stage-off honoured, Automix −14.2 LUFS / −1.0 dBTP, stage states
 - WAV 48 kHz/24-bit, MP3 320
 - new/switch session, persistence after reload
+
+2.4 song/clean suite (12 checks): checklist order and next-step highlight, section markers, clean settings stored per track, cleaned take added with clips swapped and the raw take bit-identical, report lines for breaths / pop / de-click / hum, undo, master tone/width/ceiling applied (−14.2 LUFS, −2.0 dBTP with a −2 ceiling). De-click bench: 0 false triggers on two clean 12 s vocals; 25–26 of 30 injected clicks found; median repair +8.5 to +9.2 dB.
 
 ## 5. Backend contract (as built, 2.2)
 
@@ -144,3 +149,4 @@ CORS allows localhost and https://mv-booth.netlify.app, including Chrome's Priva
 2. Crossfade editor for comp boundaries.
 3. Manual EQ/compressor insert per track, overriding the engine.
 4. Backend vocal isolation / ML denoise stages on the same job API.
+5. Multi-stem beats (separate drums/bass/melody tracks) instead of one stereo beat.

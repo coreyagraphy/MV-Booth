@@ -534,3 +534,119 @@ export function truePeak(channels) {
   }
   return tp;
 }
+
+// ---------------------------------------------------------------- de-click
+
+/**
+ * Remove mouth clicks / digital ticks: isolated spikes in the first difference
+ * (much sharper than anything a voice does) are replaced by a cubic bridge.
+ * Consonant transients last several ms and are left alone.
+ */
+// Autocorrelation (lags 0..order) of x[a, b), added into R.
+function acorr(x, a, b, order, R) {
+  for (let k = 0; k <= order; k++) for (let i = a + k; i < b; i++) R[k] += x[i] * x[i - k];
+}
+// Levinson–Durbin: prediction-error filter a[0..order] (a[0] = 1) from autocorrelation R.
+function levinson(R, order) {
+  const a = new Float64Array(order + 1);
+  a[0] = 1;
+  let err = R[0] * 1.0001;
+  if (err <= 1e-12) return null;
+  for (let m = 1; m <= order; m++) {
+    let acc = R[m];
+    for (let k = 1; k < m; k++) acc += a[k] * R[m - k];
+    const kk = -acc / err;
+    const prev = a.slice();
+    for (let k = 1; k < m; k++) a[k] = prev[k] + kk * prev[m - k];
+    a[m] = kk;
+    err *= 1 - kk * kk;
+    if (err <= 1e-12) break;
+  }
+  return a;
+}
+// Least-squares AR interpolation (Janssen et al.): fill out(a0, a1) with the samples that make the
+// whole stretch most predictable from the clean audio on both sides.
+function bridgeAR(out, a0, a1, fs) {
+  const P = 32, ctxN = Math.round(0.02 * fs);
+  const R = new Float64Array(P + 1);
+  acorr(out, Math.max(P, a0 - ctxN), a0 + 1, P, R);
+  acorr(out, a1 + P, Math.min(out.length, a1 + ctxN), P, R);
+  const A = levinson(R, P);
+  const L = a1 - a0 - 1;
+  if (!A || L < 1) return;
+  const bk = new Float64Array(P + 1);
+  for (let k = 0; k <= P; k++) for (let j = 0; j + k <= P; j++) bk[k] += A[j] * A[j + k];
+  // Symmetric Toeplitz system M·u = −(known part), solved by Gaussian elimination.
+  const M = new Float64Array(L * L), rhs = new Float64Array(L);
+  for (let i = 0; i < L; i++) {
+    const m = a0 + 1 + i;
+    for (let k = -P; k <= P; k++) {
+      const q = m + k, w = bk[Math.abs(k)];
+      if (q > a0 && q < a1) M[i * L + (q - a0 - 1)] = w;
+      else if (q >= 0 && q < out.length) rhs[i] -= w * out[q];
+    }
+  }
+  for (let c = 0; c < L; c++) {
+    const piv = M[c * L + c] || 1e-12;
+    for (let r = c + 1; r < Math.min(L, c + P + 1); r++) {
+      const f = M[r * L + c] / piv;
+      if (!f) continue;
+      for (let k = c; k < Math.min(L, c + 2 * P + 1); k++) M[r * L + k] -= f * M[c * L + k];
+      rhs[r] -= f * rhs[c];
+    }
+  }
+  for (let c = L - 1; c >= 0; c--) {
+    let s = rhs[c];
+    for (let k = c + 1; k < Math.min(L, c + 2 * P + 1); k++) s -= M[c * L + k] * out[a0 + 1 + k];
+    out[a0 + 1 + c] = s / (M[c * L + c] || 1e-12);
+  }
+}
+export function declick(x, fs) {
+  const n = x.length;
+  const out = x.slice();
+  // High-passed residual: a click is a short broadband spike, a voice is smooth from sample to sample.
+  const r = new Float32Array(n);
+  for (let i = 1; i < n - 1; i++) r[i] = x[i] - 0.5 * (x[i - 1] + x[i + 1]);
+  const cs = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) cs[i + 1] = cs[i] + r[i] * r[i];
+  const W = Math.round(0.01 * fs); // ±10 ms reference window
+  const ex = Math.round(0.001 * fs); // the click itself is excluded from its reference
+  const maxLen = Math.round(0.002 * fs);
+  const pad = Math.max(2, Math.round(0.0002 * fs));
+  const isoLo = Math.round(0.0015 * fs), isoHi = Math.round(0.012 * fs);
+  let clicks = 0;
+  for (let i = W; i < n - W; i++) {
+    const a = Math.abs(r[i]);
+    if (a < 2e-3) continue; // below −54 dBFS nobody hears it
+    const e = cs[i + W] - cs[i - W] - (cs[i + ex] - cs[i - ex]);
+    const rms = Math.sqrt(e / (2 * W - 2 * ex));
+    if (a < rms * 10) continue;
+    // Glottal pulses repeat every 2–12 ms; a click stands alone.
+    let periodic = false;
+    for (let k = isoLo; k <= isoHi && !periodic; k++) periodic = Math.abs(r[i - k]) > a * 0.45 || Math.abs(r[i + k]) > a * 0.45;
+    if (periodic) continue;
+    let j = i;
+    while (j < n - W && j - i <= maxLen && Math.abs(r[j + 1]) > rms * 4) j++;
+    if (j - i > maxLen) {
+      i = j; // a real transient (consonant onset), not a click
+      continue;
+    }
+    const a0 = Math.max(1, i - pad);
+    const a1 = Math.min(n - 2, j + pad);
+    let peak = 0;
+    for (let k = i; k <= j; k++) peak = Math.max(peak, Math.abs(r[k]));
+    const keep = out.slice(a0, a1 + 1);
+    bridgeAR(out, a0, a1, fs);
+    // Never move the audio more than the click itself: inside loud singing the model can't predict well.
+    let moved = 0;
+    for (let k = a0; k <= a1; k++) moved = Math.max(moved, Math.abs(out[k] - keep[k - a0]));
+    if (moved > peak * 1.0) {
+      out.set(keep, a0);
+      i = a1;
+      continue;
+    }
+    clicks++;
+    i = a1 + isoLo;
+  }
+  return { out, clicks };
+}

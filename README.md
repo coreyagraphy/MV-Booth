@@ -24,6 +24,27 @@ A small local Python service does offline pitch correction with **CREPE** (pitch
 
 In the **Tune** tab, *Studio tune* shows a green dot when the backend is online. Select a take, set retune speed (0 = robot hard-tune), vibrato keep, amount, confidence threshold and formant preserve, then click **Studio-tune selected take**. The result arrives as a new take ("Take 1 · tuned") and replaces the original on the track; the original stays in the take lane, untouched. The report lists every sung region with its confidence. Regions below the threshold are left exactly as recorded. On the take lane, teal marks tuned regions and red marks skipped ones.
 
+## Make a whole song (Song tab)
+
+The **Song** tab is a start-to-finish checklist that ticks itself off as you go and highlights the next step: **Beat → Song sections → Record → Comp → Clean → Tune → Doubles & ad-libs → Mix → Master → Export**. Each step has buttons that do it (import the beat, drop Intro/Verse/Hook markers, add and arm a lead, open Clean, Automix, export WAV/MP3).
+
+## Vocal cleanup (Clean tab)
+
+Per track, applied every time you Automix:
+
+| Control | What it fixes |
+| --- | --- |
+| **De-noise** | Steady background: fan, AC, hiss, room tone. Higher = cleaner; too high sounds underwater. |
+| **Breaths** | Keep / Reduce / Remove the air between lines. |
+| **De-esser** | Harsh S, SH, T, Z. Too high sounds lispy. |
+| **Pop filter** | The low thump of P and B hitting the mic; only those moments are filtered. |
+| **De-click** | Mouth clicks and lip smacks, repaired by least-squares prediction from the audio on both sides. Anything it can't repair cleanly is left untouched. |
+| **Hum** | 50 Hz (EU) or 60 Hz (US) electrical hum plus 3 harmonics. |
+
+**Preview: make a cleaned take** renders just the cleanup on the selected take and drops it on the track as "Take 1 · clean" (level-matched), with the raw take kept in the lane to compare. Undo puts the raw take back. **Use on all vocal tracks** copies the settings.
+
+The **Mixer → Master** section sets the final polish Automix applies: **Tone** (neutral / warm / bright / dark), **Width** (0–150 %), **Ceiling** (−0.3, −1 or −2 dBTP).
+
 ## Session flow (DAW basics)
 
 New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language walkthrough of the tools, mixer, presets and tuning. While you record, a red **RECORDING** bar shows the take time and your input level, and your waveform draws in red on the track.
@@ -56,11 +77,11 @@ New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language 
 - **Tune:** YIN pitch tracking, automatic key detection, note snapping with retune speed. PSOLA shifting keeps your formants, so you still sound like you. *Hard* is the robotic effect.
 - **Align:** recorded doubles and hook stacks are time-warped onto the lead (DTW + WSOLA) and pitch-matched to the lead, like VocAlign.
 - **Double:** studio-style AI doubles from the lead: a detuned, drifting L/R pair, plus an optional octave-down layer.
-- **Clean:** noise reduction, breath taming, plosive pop filter, gap gating.
+- **Clean:** de-click, hum notches, noise reduction, breath keep/reduce/remove, plosive pop filter, gap gating (all set per track in the Clean tab).
 - **Tone:** low cut from your pitch, EQ matched to a target vocal curve, dynamic de-esser (harder on doubles).
 - **Dynamics:** vocal rider automation, compression, parallel grit in rap mode, phone FX.
 - **Space:** role-based level balance, the beat carved under the vocal only while it plays, tempo-synced delay with throws on phrase endings, plate/room with ducking, Haas widening.
-- **Master:** bus glue, loudness to target (−14 streaming, −9 club, −16 VO, −23 broadcast), look-ahead limiter iterated until true peak ≤ −1 dBTP (4× oversampled).
+- **Master:** tone tilt, stereo width, bus glue, loudness to target (−14 streaming, −9 club, −16 VO, −23 broadcast), look-ahead limiter iterated until true peak is at or below the ceiling you pick (default −1 dBTP, 4× oversampled).
 
 The **Engine** tab logs every decision with its numbers, plus what the engine has learned about your voice. `docs/SPEC-v2.md` maps every standard DAW feature to what is built.
 
