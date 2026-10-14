@@ -22,6 +22,7 @@ import {
   samplePeak,
   smoothCurve,
   tick,
+  truePeak,
 } from "./dsp.js";
 
 export const MODES = {
@@ -37,7 +38,7 @@ export const MODES = {
     grit: 0.18,
     eqTarget: { 250: 5, 500: 3.5, 1000: 0, 2000: -3.5, 3200: -5.5, 6000: -8.5, 10000: -13 },
     reverb: { seconds: 1.15, preDelay: 0.022, sendDb: -17 },
-    delay: { division: 1, sendDb: -24, feedback: 0.28 },
+    delay: { division: 0.75, sendDb: -24, feedback: 0.28 },
     beatOffsetLu: -1, // beat loudness relative to the lead vocal
     duckDb: 0.8,
     vocalLufs: -18,
@@ -69,18 +70,28 @@ export const ROLES = {
   octave: { label: "Octave", levelDb: -13, pan: 0, hpBoost: 0, reverbDb: -6, delayDb: -60, deessMult: 2, hidden: true },
 };
 
+export const REVERBS = {
+  booth: { label: "Booth", seconds: 0.35, preDelay: 0.008 },
+  room: { label: "Room", seconds: 0.8, preDelay: 0.012 },
+  plate: { label: "Plate", seconds: 1.6, preDelay: 0.022 },
+  hall: { label: "Hall", seconds: 2.6, preDelay: 0.032 },
+};
+export const DELAYS = { "1/4": 1, "1/8.": 0.75, "1/8": 0.5, "1/16": 0.25 };
+
 export const FX = { clean: "Clean", phone: "Phone", wide: "Wide (Haas)" };
 
 const HOP = 512; // analysis hop (~10.7 ms @ 48 kHz)
 
 // ---------------------------------------------------------------- 1. analysis
 
-export async function analyseVocal(raw, fs, mode, onProgress) {
+export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false } = {}) {
   const preset = MODES[mode];
-  const nr = await denoise(raw, fs, {
-    floorDb: preset.nrFloorDb,
-    onProgress: (p) => onProgress?.(p * 0.6),
-  });
+  const nr = skipNR
+    ? { out: raw, snrDb: NaN, applied: false, reductionDb: 0 }
+    : await denoise(raw, fs, {
+        floorDb: preset.nrFloorDb,
+        onProgress: (p) => onProgress?.(p * 0.6),
+      });
   const x = nr.out;
   const frames = Math.ceil(x.length / HOP);
   const N = 2048;
@@ -250,7 +261,7 @@ function decideEq(an, mode, role, profile) {
   };
 }
 
-function gainCurve(an, fs, mode) {
+function gainCurve(an, fs, mode, { gate = true, ride: doRide = true } = {}) {
   const preset = MODES[mode];
   const env = loudnessEnvelope(an.clean, fs, HOP, 0.3);
   const activeLoud = [];
@@ -260,12 +271,12 @@ function gainCurve(an, fs, mode) {
   let rideMin = 0, rideMax = 0;
   for (let f = 0; f < an.frames; f++) {
     if (an.active[f]) {
-      const ride = clamp((ref - env[f]) * preset.rideAmount, -preset.rideRange, preset.rideRange);
+      const ride = doRide ? clamp((ref - env[f]) * preset.rideAmount, -preset.rideRange, preset.rideRange) : 0;
       curve[f] = ride;
       rideMin = Math.min(rideMin, ride);
       rideMax = Math.max(rideMax, ride);
     } else {
-      curve[f] = an.breath[f] ? preset.breathDb : preset.gateDb;
+      curve[f] = gate ? (an.breath[f] ? preset.breathDb : preset.gateDb) : 0;
     }
   }
   // Open ~30 ms early, rise in ~20 ms, fall in ~90 ms.
@@ -292,7 +303,7 @@ function deessCurve(an, mode, mult = 1) {
   return { curve: smoothCurve(out, 0.2, 0.7).map((v) => Math.min(0, v)), events, maxCut };
 }
 
-function makeImpulse(ctx, seconds, preset) {
+export function makeImpulse(ctx, seconds, preset) {
   const fs = ctx.sampleRate;
   const len = Math.max(1, Math.round(seconds * fs * 1.4));
   const ir = ctx.createBuffer(2, len, fs);
@@ -319,13 +330,18 @@ function curveToGain(curveDb, extraDb = 0) {
 }
 
 /** Render the processed, panned vocal for one track. */
-export async function renderVocal(track, raw, fs, mode, onProgress, { profile } = {}) {
-  const an = await analyseVocal(raw, fs, mode, (p) => onProgress?.(p * 0.85));
+export async function renderVocal(track, raw, fs, mode, onProgress, { profile, stages = {} } = {}) {
+  const st = { clean: true, tone: true, dynamics: true, ...stages };
+  const an = await analyseVocal(raw, fs, mode, (p) => onProgress?.(p * 0.85), { skipNR: !st.clean });
   const preset = MODES[mode];
   const role = ROLES[track.role] ? track.role : "lead";
-  const eq = decideEq(an, mode, role, profile);
-  const ride = gainCurve(an, fs, mode);
+  const eq = st.tone ? decideEq(an, mode, role, profile) : { hpf: 30, mud: 0, box: 0, presence: 0, air: 0 };
+  const ride = gainCurve(an, fs, mode, { gate: st.clean, ride: st.dynamics });
   const ds = deessCurve(an, mode, ROLES[role].deessMult);
+  if (!st.clean) {
+    ds.curve.fill(0);
+    an.plosives = 0;
+  }
   const preGainDb = clamp(-20 - an.activeLevel, -12, 36);
   const threshold = preset.comp.threshold - clamp((an.dynRange - 8) * 0.4, 0, 4);
 
@@ -362,8 +378,8 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile } 
   if (ds.curve.length > 1) deesser.gain.setValueCurveAtTime(ds.curve, 0, dur);
 
   const comp = ctx.createDynamicsCompressor();
-  comp.threshold.value = threshold;
-  comp.ratio.value = preset.comp.ratio;
+  comp.threshold.value = st.dynamics ? threshold : 0;
+  comp.ratio.value = st.dynamics ? preset.comp.ratio : 1;
   comp.attack.value = preset.comp.attack;
   comp.release.value = preset.comp.release;
   comp.knee.value = preset.comp.knee;
@@ -375,7 +391,7 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile } 
   const pan = ctx.createStereoPanner();
   pan.pan.value = 0; // placement happens in the mix stage
   comp.connect(pan);
-  if (preset.grit > 0) {
+  if (preset.grit > 0 && st.dynamics) {
     const shaper = ctx.createWaveShaper();
     const k = 2.5;
     const c = new Float32Array(2048);
@@ -426,6 +442,9 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile } 
     hop: HOP,
     learned: { spectrum: an.spectrum, f0: an.f0Median, sibCentre: an.sibCentre, seconds: an.activeSec },
     report: [
+      ...(st.clean ? [] : ["Clean stage off: no noise reduction, gating, breath control, de-ess or pop filter"]),
+      ...(st.tone ? [] : ["Tone stage off: no EQ (30 Hz rumble filter only)"]),
+      ...(st.dynamics ? [] : ["Dynamics stage off: no rider, compressor or grit"]),
       an.nr.applied
         ? `Noise reduction: ${an.nr.reductionDb.toFixed(1)} dB avg mask (input SNR ${an.nr.snrDb.toFixed(0)} dB)`
         : `Noise reduction: skipped — take is clean (SNR ${an.nr.snrDb.toFixed(0)} dB)`,
@@ -437,7 +456,12 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile } 
       `Vocal rider: ${ride.rideMin.toFixed(1)} … +${ride.rideMax.toFixed(1)} dB automation`,
       `Compressor: ${ratio}:1 @ ${threshold.toFixed(1)} dB${preset.grit ? ` + ${Math.round(preset.grit * 100)}% parallel grit` : ""}`,
       ...(track.fx === "phone" ? ["FX: phone band-pass 480 Hz–3.1 kHz + drive"] : []),
-    ],
+    ].filter((line) => {
+      if (!st.clean && /^(Noise reduction|De-ess|Breaths|Plosives)/.test(line)) return false;
+      if (!st.tone && /^(Voice:|Tone EQ)/.test(line)) return false;
+      if (!st.dynamics && /^(Vocal rider|Compressor)/.test(line)) return false;
+      return true;
+    }),
   };
 }
 
@@ -465,15 +489,21 @@ function activityEnvelope(buffer) {
  */
 export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, length, only = null }) {
   const preset = MODES[mode];
+  const stages = { space: true, master: true, ...(settings.stages || {}) };
   const balance = settings.balance ?? 0; // + = vocal louder vs beat
-  const space = settings.space ?? 1;
+  const space = stages.space ? (settings.space ?? 1) : 0;
+  const verb = settings.reverb && settings.reverb !== "auto" ? REVERBS[settings.reverb] : { ...preset.reverb, label: mode === "vo" ? "Booth" : "Plate" };
+  const verbSendDb = preset.reverb.sendDb;
+  const div = settings.delayDiv === "off" ? 0 : settings.delayDiv && settings.delayDiv !== "auto" ? DELAYS[settings.delayDiv] : preset.delay?.division || 0;
+  const delayCfg = div ? { division: div, sendDb: preset.delay?.sendDb ?? -26, feedback: preset.delay?.feedback ?? 0.25 } : null;
+  const divName = Object.entries(DELAYS).find(([, v]) => v === div)?.[0] || "";
   const ctx = new OfflineAudioContext(2, length, fs);
   const bus = ctx.createGain();
   const notes = [];
 
   // Shared space: plate/room + tempo delay.
   const pre = ctx.createDelay(1);
-  pre.delayTime.value = preset.reverb.preDelay;
+  pre.delayTime.value = verb.preDelay;
   const verbHp = ctx.createBiquadFilter();
   verbHp.type = "highpass";
   verbHp.frequency.value = 320;
@@ -481,18 +511,18 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
   verbLp.type = "lowpass";
   verbLp.frequency.value = 7500;
   const conv = ctx.createConvolver();
-  conv.buffer = makeImpulse(ctx, preset.reverb.seconds, mode);
+  conv.buffer = makeImpulse(ctx, verb.seconds, mode);
   const verbReturn = ctx.createGain(); // ducked under the lead so the tail blooms in the gaps
   pre.connect(verbHp).connect(verbLp).connect(conv).connect(verbReturn).connect(bus);
 
   const bpm = settings.bpm || 0;
   let delayIn = null;
-  if (preset.delay && bpm) {
-    const dt = clamp(((60 / bpm) * preset.delay.division), 0.08, 1.5);
+  if (delayCfg && bpm && stages.space) {
+    const dt = clamp((60 / bpm) * delayCfg.division, 0.08, 1.5);
     const d = ctx.createDelay(2);
     d.delayTime.value = dt;
     const fb = ctx.createGain();
-    fb.gain.value = preset.delay.feedback;
+    fb.gain.value = delayCfg.feedback;
     const dhp = ctx.createBiquadFilter();
     dhp.type = "highpass";
     dhp.frequency.value = 500;
@@ -502,9 +532,9 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
     delayIn = ctx.createGain();
     delayIn.connect(dhp).connect(d).connect(dlp).connect(fb).connect(d);
     dlp.connect(bus);
-    notes.push(`Delay: 1/4 note @ ${bpm} BPM = ${Math.round(dt * 1000)} ms, filtered 500 Hz–4.2 kHz`);
+    notes.push(`Delay: ${divName} note @ ${bpm} BPM = ${Math.round(dt * 1000)} ms, filtered 500 Hz–4.2 kHz`);
   }
-  notes.push(`Space: ${preset.reverb.seconds}s ${mode === "vo" ? "room" : "plate"}, pre-delay ${Math.round(preset.reverb.preDelay * 1000)} ms, ×${space.toFixed(2)} send`);
+  notes.push(stages.space ? `Space: ${verb.label} ${verb.seconds}s, pre-delay ${Math.round(verb.preDelay * 1000)} ms, ×${space.toFixed(2)} send` : "Space stage off: no reverb or delay");
 
   // Vocals ------------------------------------------------------------
   const leadLufs = [];
@@ -545,11 +575,11 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
       src.connect(g).connect(p).connect(bus);
     }
     const rs = ctx.createGain();
-    rs.gain.value = dbToLin(preset.reverb.sendDb + role.reverbDb) * space;
+    rs.gain.value = dbToLin(verbSendDb + role.reverbDb) * space * (track.revSend ?? 1);
     p.connect(rs).connect(pre);
     if (delayIn && role.delayDb > -40) {
       const ds = ctx.createGain();
-      const base = dbToLin(preset.delay.sendDb + role.delayDb) * space;
+      const base = dbToLin(delayCfg.sendDb + role.delayDb) * space * (track.dlySend ?? 1);
       ds.gain.value = base;
       if (track.role === "lead" && mode === "rap") {
         // Delay throws: open the send on the last word of each phrase.
@@ -587,7 +617,7 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
     const bR = beat.numberOfChannels > 1 ? beat.getChannelData(1) : bL;
     const beatLufs = integratedLoudness([bL, bR], fs);
     const ref = leadLufs.length ? Math.max(...leadLufs) : preset.vocalLufs;
-    const beatGainDb = clamp(ref + preset.beatOffsetLu - balance - beatLufs, -40, 20);
+    const beatGainDb = clamp(ref + preset.beatOffsetLu - balance - beatLufs + (beatTrack?.volumeDb || 0), -60, 20);
 
     // Masking: where does the beat crowd the vocal's presence band most?
     const beatBands = bandSpectrum(bL, fs, null, 8192).bands;
@@ -641,25 +671,37 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
   const chans = [rendered.getChannelData(0), rendered.getChannelData(1)];
   const pre1 = integratedLoudness(chans, fs);
   const target = settings.targetLufs ?? -14;
-  const gain = Number.isFinite(pre1) ? dbToLin(target - pre1) : 1;
+  const gain = !stages.master ? dbToLin(settings.masterDb || 0) : Number.isFinite(pre1) ? dbToLin(target - pre1) : 1;
   const gained = chans.map((c) => c.map((v) => v * gain));
-  let lim = limit(gained, fs, -1);
+  // Limit, then iterate: true peak must sit at or under −1 dBTP and (when the
+  // master stage is on) integrated loudness must land within 0.3 LU of target.
+  let ceiling = -1;
+  let g2 = 1;
+  let lim = limit(gained, fs, ceiling);
   let post = integratedLoudness(lim.channels, fs);
-  // One correction pass: the limiter shaves loudness when it works hard.
-  if (Number.isFinite(post) && target - post > 0.3) {
-    const g2 = dbToLin(target - post);
-    lim = limit(gained.map((c) => c.map((v) => v * g2)), fs, -1);
+  let tp = linToDb(truePeak(lim.channels));
+  for (let i = 0; i < 10; i++) {
+    const tpOver = tp > -1;
+    const loudOff = stages.master && Number.isFinite(post) && Math.abs(target - post) > 0.2;
+    if (!tpOver && !loudOff) break;
+    if (tpOver) ceiling -= tp + 1 + 0.05;
+    if (loudOff) g2 *= dbToLin(target - post);
+    lim = limit(gained.map((c) => c.map((v) => v * g2)), fs, ceiling);
     post = integratedLoudness(lim.channels, fs);
+    tp = linToDb(truePeak(lim.channels));
   }
+  post = integratedLoudness(lim.channels, fs);
   const master = new AudioBuffer({ numberOfChannels: 2, length, sampleRate: fs });
   master.copyToChannel(lim.channels[0], 0);
   master.copyToChannel(lim.channels[1], 1);
   const peak = linToDb(samplePeak(lim.channels));
   notes.push(
     `Glue: 1.8:1 bus compression, 30 ms attack`,
-    `Master: ${post.toFixed(1)} LUFS integrated (target ${target}), peak ${peak.toFixed(1)} dBFS, limiter max −${lim.maxReductionDb.toFixed(1)} dB`,
+    stages.master
+      ? `Master: ${post.toFixed(1)} LUFS integrated (target ${target}), true peak ${tp.toFixed(1)} dBTP, limiter max −${lim.maxReductionDb.toFixed(1)} dB`
+      : `Master stage off: fader ${(settings.masterDb || 0).toFixed(1)} dB + safety limiter · ${post.toFixed(1)} LUFS, true peak ${tp.toFixed(1)} dBTP`,
   );
-  return { buffer: master, notes, lufs: post, peak };
+  return { buffer: master, notes, lufs: post, peak, truePeak: tp };
 }
 
 export { estimateBpm, integratedLoudness, BANDS };

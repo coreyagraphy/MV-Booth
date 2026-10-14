@@ -500,3 +500,37 @@ export function lookaheadMax(curve, frames) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------- true peak
+
+/**
+ * True peak (linear) via 4× windowed-sinc oversampling, BS.1770 style.
+ * Only samples near the sample peak are interpolated, which keeps it fast.
+ */
+export function truePeak(channels) {
+  const taps = 12;
+  const phases = [0.25, 0.5, 0.75].map((frac) => {
+    const h = [];
+    for (let k = -taps + 1; k <= taps; k++) {
+      const x = k - frac;
+      const w = 0.5 + 0.5 * Math.cos((Math.PI * x) / (taps + 1));
+      h.push(((Math.sin(Math.PI * x) / (Math.PI * x)) || 1) * w);
+    }
+    return h;
+  });
+  const sp = samplePeak(channels);
+  const near = sp * 0.5;
+  let tp = sp;
+  for (const c of channels) {
+    for (let n = taps; n < c.length - taps; n++) {
+      if (Math.abs(c[n]) < near && Math.abs(c[n + 1]) < near) continue;
+      for (const h of phases) {
+        let v = 0;
+        for (let k = -taps + 1, j = 0; k <= taps; k++, j++) v += c[n + k] * h[j];
+        const a = Math.abs(v);
+        if (a > tp) tp = a;
+      }
+    }
+  }
+  return tp;
+}

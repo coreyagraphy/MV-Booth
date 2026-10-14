@@ -19,10 +19,14 @@ export const STAGES = [
 const overlap = (a, b) =>
   Math.max(0, Math.min(a.offset + a.buffer.duration, b.offset + b.buffer.duration) - Math.max(a.offset, b.offset));
 
-export async function runEngine({ tracks, beat, fs, mode, settings, profile, onStage }) {
-  const stage = (key, p, msg) => onStage?.(key, p, msg);
+export async function runEngine({ tracks, beat, fs, mode, settings, profile, onStage, signal }) {
+  const st = { tune: true, align: true, double: true, clean: true, tone: true, dynamics: true, space: true, master: true, ...(settings.stages || {}) };
+  const stage = (key, p, msg, state) => {
+    if (signal?.cancelled) throw new Error("Cancelled");
+    onStage?.(key, p, msg, state);
+  };
   const vocals = tracks.filter((t) => !t.mute && t.buffer);
-  const style = settings.tuneStyle || "off";
+  const style = st.tune ? settings.tuneStyle || "off" : "off";
   const prep = new Map();
 
   // 1. TUNE ------------------------------------------------------------------
@@ -51,11 +55,11 @@ export async function runEngine({ tracks, beat, fs, mode, settings, profile, onS
     pr.target = r.target;
     pr.notes.push(`Pitch: ${STYLES[style].label} tune in ${keyLabel(key)} — moved ${Math.round(r.moved * 100)}% of sung frames, max ${r.maxShift.toFixed(2)} st`);
   }
-  stage("tune", 1, `Key ${keyLabel(key)}`);
+  stage("tune", 1, `Key ${keyLabel(key)}`, style === "off" ? "skipped" : "done");
 
   // 2. ALIGN recorded doubles / stacks to the lead they sit on -----------------
   const leads = vocals.filter((t) => t.role === "lead");
-  const followers = settings.alignDoubles === false ? [] : vocals.filter((t) => t.role === "double" || t.role === "hook");
+  const followers = settings.alignDoubles === false || !st.align ? [] : vocals.filter((t) => t.role === "double" || t.role === "hook");
   for (const [i, t] of followers.entries()) {
     const lead = leads.map((l) => [l, overlap(l, t)]).sort((a, b) => b[1] - a[1])[0];
     if (!lead || lead[1] < 0.5) continue;
@@ -70,11 +74,11 @@ export async function runEngine({ tracks, beat, fs, mode, settings, profile, onS
     pr.x = r.out;
     pr.notes.push(`Aligned to ${lead[0].name}: ${r.avgShiftMs.toFixed(0)} ms avg timing fix, pitch-matched ${Math.round(r.pitchMatched * 100)}% of sung frames`);
   }
-  stage("align", 1);
+  stage("align", 1, null, followers.length ? "done" : "skipped");
 
   // 3. DOUBLE — studio ADT doubles generated from each lead ---------------------
   const virtual = [];
-  const wantDbl = leads.filter((t) => t.dbl && t.dbl !== "off");
+  const wantDbl = st.double ? leads.filter((t) => t.dbl && t.dbl !== "off") : [];
   for (const [i, t] of wantDbl.entries()) {
     stage("double", i / wantDbl.length, `Generating doubles · ${t.name}`);
     const pr = prep.get(t.id);
@@ -84,7 +88,7 @@ export async function runEngine({ tracks, beat, fs, mode, settings, profile, onS
       virtual.push(v);
     }
   }
-  stage("double", 1);
+  stage("double", 1, null, wantDbl.length ? "done" : "skipped");
 
   // 4. Per-lane chain: CLEAN → TONE → DYNAMICS ---------------------------------
   const all = [...vocals, ...virtual];
@@ -94,12 +98,14 @@ export async function runEngine({ tracks, beat, fs, mode, settings, profile, onS
     const r = await renderVocal(t, pr.x, fs, mode, (p) => {
       const g = (i + p) / all.length;
       stage(p < 0.6 ? "clean" : p < 0.9 ? "tone" : "dynamics", g, `Engineering ${t.name}`);
-    }, { profile });
+    }, { profile, stages: { clean: st.clean, tone: st.tone, dynamics: st.dynamics } });
     r.report = [...pr.notes, ...r.report];
     r.pitch = { f0: pr.pitch.f0, f0Out: pr.f0Out, target: pr.target };
     processed.set(t.id, r);
   }
-  stage("dynamics", 1);
+  stage("clean", 1, null, st.clean ? "done" : "skipped");
+  stage("tone", 1, null, st.tone ? "done" : "skipped");
+  stage("dynamics", 1, null, st.dynamics ? "done" : "skipped");
 
   // 5. SPACE + MASTER ------------------------------------------------------------
   stage("space", 0.3, "Balancing, unmasking, space");
@@ -107,7 +113,8 @@ export async function runEngine({ tracks, beat, fs, mode, settings, profile, onS
   const length = Math.ceil((end + 2) * fs);
   const mixInput = all.map((t) => ({ track: t, processed: processed.get(t.id) }));
   const mix = await renderMix({ vocals: mixInput, beat: beat?.buffer || null, beatTrack: beat, fs, mode, settings, length });
-  stage("master", 1, "Mastered");
+  stage("space", 1, null, st.space ? "done" : "skipped");
+  stage("master", 1, st.master ? "Mastered" : "Master stage off", st.master ? "done" : "skipped");
 
   // Learn: fold this session's lead analysis into the voice profile.
   const next = { ...(profile || {}), sessions: (profile?.sessions || 0) + 1 };

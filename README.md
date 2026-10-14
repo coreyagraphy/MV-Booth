@@ -13,21 +13,26 @@ The shortcut starts a tiny local engine silently. It shuts itself down about two
 
 Wear headphones while recording so the beat doesn't bleed into the mic.
 
-## Session flow
+## Session flow (DAW basics)
 
-| Step | What you do | Keys |
-| --- | --- | --- |
-| Beat | Drag an instrumental onto the timeline, or **Import beat**. Tempo is detected. | |
-| Mic | **Enable mic**, pick your interface. | |
-| Role | **Next take is a** Lead / Double / Ad-lib / Hook stack. | |
-| Record | Each take lands on its own lane at the playhead. | `R` |
-| Lane chips | **TUNE** on/off · **DBL → 2X → 2X+8** AI doubles (leads) · FX Clean / Phone / Wide · M / S | |
-| Tune tab | Correction Off / Natural / Tight / Hard, key (auto or set) and scale, double alignment and tightness, pitch view | |
-| Automix | Runs the 8-stage engine; the dock lights each stage. | |
-| Compare | Instant switch between raw takes and the mix. | `B` |
-| Export | Master WAV (24-bit), stems, raw takes. | |
+| Step | How |
+| --- | --- |
+| Beat | Drag an instrumental onto the timeline, or **Booth → Import beat**. Tempo is detected; **Tap** (T) or type it to override. |
+| Tracks | **+ Track** → Lead / Double / Ad-lib / Hook. Click the red dot to arm (one at a time). |
+| Record | Set **Count-in**, switch **Click** on if you want it (C), press **R**. |
+| Loop record | Drag across the ruler to set a loop and press **L**, then record: every pass becomes a take. |
+| Comp | Open the take lanes (the `3 ▾` chip), split at the playhead (**X**), select a clip, click **Comp** on the take you want for that section. **★** marks the best take. |
+| Edit | Drag clips to move (snaps to 1/16; hold Alt to bypass), drag edges to trim, drag the top corners for fades. The clip inspector sets gain and fade times. |
+| Mix | Header sliders or the **Mixer** tab: volume, pan, reverb and delay sends, meters, master fader. Mix direction sets loudness target, reverb type, delay division. |
+| Automix | Runs the 8-stage engine. Click a stage in the dock to switch it off. **Cancel** stops it safely. |
+| Compare | **B** flips between your rough mix and the engine mix. |
+| Export | **Export ▾** (E): master WAV (48/44.1 kHz, 24-bit), MP3 320 kbps, stems, raw takes. |
+| Sessions | Session name (top left): new, rename, duplicate, delete to trash (restorable for 30 days). Autosaves constantly. |
 
-`Space` plays and stops (and ends a take). `Home` returns to the start.
+### Keyboard
+`Space` play/pause · `Enter` stop (back to start point) · `Home` return to zero · `R` record · `L` loop · `C` click · `T` tap tempo · `X` split · `Delete` delete clip · `M` marker · `B` raw/mix · `E` export · `←/→` nudge a beat (Shift = bar) · `+/−` zoom · `F` fit · `Ctrl+Z` undo · `Ctrl+Shift+Z` redo · `Ctrl+S` save. While recording with the prompter open: `↓/↑` move the lyric line.
+
+**Lyrics:** start a line with `[bar 5]` and the prompter highlights it when the playhead reaches bar 5.
 
 ## The engine
 
@@ -40,9 +45,9 @@ Wear headphones while recording so the beat doesn't bleed into the mic.
 - **Tone:** low cut from your pitch, EQ matched to a target vocal curve, dynamic de-esser (harder on doubles).
 - **Dynamics:** vocal rider automation, compression, parallel grit in rap mode, phone FX.
 - **Space:** role-based level balance, the beat carved under the vocal only while it plays, tempo-synced delay with throws on phrase endings, plate/room with ducking, Haas widening.
-- **Master:** bus glue, loudness to target (−14 streaming, −10 loud, −16 VO, −23 broadcast), look-ahead limiter at −1 dBFS.
+- **Master:** bus glue, loudness to target (−14 streaming, −9 club, −16 VO, −23 broadcast), look-ahead limiter iterated until true peak ≤ −1 dBTP (4× oversampled).
 
-The **Engine** tab logs every decision with its numbers, plus what the engine has learned about your voice.
+The **Engine** tab logs every decision with its numbers, plus what the engine has learned about your voice. `docs/SPEC-v2.md` maps every standard DAW feature to what is built.
 
 ### About "training"
 

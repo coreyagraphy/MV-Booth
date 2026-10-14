@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MV Booth</title>
-    <meta name="description" content="Mental Vision vocal engine: record, tune, double and auto-mix voice-overs and rap vocals." />
+    <meta name="description" content="Mental Vision vocal DAW: track, comp, tune, double and auto-mix voice-overs and rap vocals." />
     <meta name="theme-color" content="#04060a" />
     <link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials" />
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
@@ -27,6 +27,10 @@
         </svg>
         <div><b>MV BOOTH</b><small>VOCAL ENGINE</small></div>
       </div>
+      <div class="menu-wrap">
+        <button id="btnSession" class="session-btn" title="Sessions"><span id="sessionName">Session</span> <i>▾</i></button>
+        <div class="menu glass" id="sessionMenu" hidden></div>
+      </div>
       <div class="seg" id="modeSeg" role="radiogroup" aria-label="Mix mode">
         <span class="thumb"></span>
         <button data-mode="rap" role="radio">Rap</button>
@@ -34,33 +38,75 @@
       </div>
 
       <div class="transport">
-        <button id="btnReturn" class="icon" title="Return to start (Home)" aria-label="Return to start"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg></button>
-        <button id="btnPlay" class="icon" title="Play / stop (Space)" aria-label="Play">
+        <button id="btnReturn" class="icon" title="Return to zero (Home)" aria-label="Return to zero"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg></button>
+        <button id="btnStop" class="icon" title="Stop and return to start point (Enter)" aria-label="Stop"><svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z" /></svg></button>
+        <button id="btnPlay" class="icon" title="Play / pause (Space)" aria-label="Play">
           <svg viewBox="0 0 24 24" class="i-play"><path d="M7 4v16l13-8z" /></svg>
-          <svg viewBox="0 0 24 24" class="i-stop"><path d="M6 6h12v12H6z" /></svg>
+          <svg viewBox="0 0 24 24" class="i-pause"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
         </button>
-        <button id="btnRec" class="icon rec" title="Record a take (R)" aria-label="Record"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /></svg></button>
-        <div class="clock" id="clock">00:00.0</div>
-        <div class="chips"><span class="chip" id="chipBpm">— BPM</span><span class="chip" id="chipKey">Key auto</span></div>
+        <button id="btnRec" class="icon rec" title="Record on the armed track (R)" aria-label="Record"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /></svg></button>
+        <div class="clock-wrap">
+          <div class="clock" id="clock">00:00.0</div>
+          <div class="sub" id="clockSub">— · 4/4</div>
+        </div>
+        <div class="chips">
+          <button class="chip tog-chip" id="btnLoop" title="Loop playback / loop record (L)">⟲ Loop</button>
+          <button class="chip tog-chip" id="btnClick" title="Metronome (C)">♪ Click</button>
+          <button class="chip" id="btnTap" title="Tap tempo (T)">Tap</button>
+          <span class="chip" id="chipKey">Key auto</span>
+        </div>
       </div>
 
-      <div class="seg" id="abSeg" aria-label="Compare raw and mixed">
+      <div class="seg" id="abSeg" aria-label="Compare rough and engine mix">
         <span class="thumb"></span>
-        <button data-ab="A" title="Raw takes (B toggles)">Raw</button>
-        <button data-ab="B" title="Engine mix (B toggles)">Mix</button>
+        <button data-ab="A" title="Your rough mix: faders, pans, sends (B toggles)">Raw</button>
+        <button data-ab="B" title="The engine's mix (B toggles)">Mix</button>
       </div>
       <button id="btnAutomix" class="core">Automix</button>
     </header>
 
     <main>
       <section class="stage glass rise d1">
+        <div class="toolbar" id="toolbar">
+          <div class="menu-wrap">
+            <button class="tb" id="btnAddTrack">+ Track ▾</button>
+            <div class="menu glass" id="addMenu" hidden>
+              <button data-type="lead">Lead</button><button data-type="double">Double</button><button data-type="adlib">Ad-lib</button><button data-type="hook">Hook stack</button>
+            </div>
+          </div>
+          <span class="sep"></span>
+          <button class="tb" id="btnUndo" title="Undo (Ctrl+Z)">↶</button>
+          <button class="tb" id="btnRedo" title="Redo (Ctrl+Shift+Z)">↷</button>
+          <span class="sep"></span>
+          <button class="tb tog-chip" id="btnSnap" title="Snap edits to the 1/16 grid (hold Alt to bypass)">Snap</button>
+          <button class="tb" id="btnSplit" title="Split the selected track at the playhead (X)">Split</button>
+          <button class="tb" id="btnDelClip" title="Delete the selected clip (Delete)">Delete</button>
+          <button class="tb" id="btnMarker" title="Add a marker at the playhead (M)">+ Marker</button>
+          <span class="sep"></span>
+          <label class="tb-field" title="Count-in before recording">Count-in
+            <select id="countIn"><option value="0">Off</option><option value="1">1 bar</option><option value="2">2 bars</option></select>
+          </label>
+          <label class="tb-field" title="Click level">Click <input type="range" id="clickLevel" min="0" max="1" step="0.05" /></label>
+          <label class="tb-field" title="Tempo in BPM (0 = detect from the beat)">BPM <input type="number" id="bpm" min="0" max="220" step="1" /></label>
+          <span class="grow"></span>
+          <div class="clip-insp" id="clipInsp" hidden>
+            <span class="badge">Clip</span>
+            <label class="tb-field">Gain <input type="range" id="clipGain" min="-24" max="12" step="0.5" /><output id="clipGainOut"></output></label>
+            <label class="tb-field">Fade in <input type="number" id="clipFadeIn" min="0" max="5000" step="10" />ms</label>
+            <label class="tb-field">Fade out <input type="number" id="clipFadeOut" min="0" max="5000" step="10" />ms</label>
+          </div>
+          <span class="sep"></span>
+          <button class="tb" id="btnZoomOut" title="Zoom out (−)">−</button>
+          <button class="tb" id="btnZoomIn" title="Zoom in (+)">+</button>
+          <button class="tb" id="btnFit" title="Fit the session (F)">Fit</button>
+        </div>
         <div class="timeline" id="timeline">
-          <div class="ruler" id="ruler"></div>
+          <div class="ruler-row"><div class="ruler-head" id="rulerHead">BARS</div><canvas id="ruler"></canvas></div>
           <div class="lanes" id="lanes"></div>
           <div class="playhead" id="playhead"></div>
           <div class="empty" id="emptyHint">
             <h2>Drop the beat.<br />Step in the booth.</h2>
-            <p>Drag an instrumental anywhere here, or skip it for a dry voice-over. Every take gets its own lane. <b>Automix</b> tunes, aligns, doubles, mixes and masters it.</p>
+            <p>Drag an instrumental anywhere here, add a track, arm it and press <b>R</b>. Every pass becomes a take you can comp. <b>Automix</b> tunes, aligns, doubles, mixes and masters it.</p>
           </div>
         </div>
       </section>
@@ -69,12 +115,13 @@
         <div class="monitor glass rise d2">
           <canvas id="spectrum"></canvas>
           <div class="meters" title="Output L / R and mic input"><i><b id="mL"></b></i><i><b id="mR"></b></i><i><b id="mIn"></b></i></div>
-          <div class="readouts"><span>Out <b id="roLufs">— LUFS</b></span><span>Peak <b id="roPeak">—</b></span><span>Mic <b id="roMic">off</b></span></div>
+          <div class="readouts"><span>S-T <b id="roLufs">—</b> <em>approx</em></span><span>Peak <b id="roPeak">—</b></span><span>Mic <b id="roMic">off</b><i class="clip-led" id="clipLed" title="Input clipped"></i></span></div>
         </div>
 
         <div class="panel glass rise d3">
           <nav class="tabs" role="tablist">
             <button data-tab="booth" class="on">Booth</button>
+            <button data-tab="mixer">Mixer</button>
             <button data-tab="tune">Tune</button>
             <button data-tab="lyrics">Lyrics</button>
             <button data-tab="engine">Engine</button>
@@ -84,33 +131,42 @@
             <label class="field"><span>Microphone</span><select id="micSelect"><option value="">Default input</option></select></label>
             <div class="row">
               <button id="btnMic" class="btn">Enable mic</button>
-              <label class="check"><input type="checkbox" id="monitor" /> Monitor through headphones</label>
+              <label class="check"><input type="checkbox" id="monitor" /> Monitor (headphones)</label>
             </div>
-            <label class="field"><span>Next take is a</span><select id="nextRole"></select></label>
+            <label class="field"><span>Input gain <output id="inGainOut">0 dB</output></span><input type="range" id="inGain" min="-60" max="24" step="0.5" /></label>
+            <h3>Latency</h3>
+            <label class="field"><span>Latency trim <output id="latencyOut">0 ms</output></span><input type="range" id="latency" min="-200" max="200" step="1" /></label>
+            <div class="row"><button id="btnCalibrate" class="btn">Auto-calibrate</button><span class="muted small" id="rtOut">Round trip: —</span></div>
+            <p class="muted small">Calibrate: hold your headphones to the mic (or use speakers). The booth plays four clicks and measures when they come back.</p>
+            <h3>Import</h3>
             <div class="row">
               <button id="btnImportBeat" class="btn">Import beat</button>
               <button id="btnImportVocal" class="btn">Import vocal</button>
             </div>
             <input type="file" id="fileBeat" accept="audio/*" hidden />
             <input type="file" id="fileVocal" accept="audio/*" multiple hidden />
+            <h3>Recording</h3>
+            <label class="check"><input type="checkbox" id="usePrompter" checked /> Lyric prompter while recording</label>
+            <label class="check"><input type="checkbox" id="transcribe" /> <span>Live transcription <small>Chrome/Edge only; sends audio to the browser's speech service</small></span></label>
+          </div>
 
+          <div class="tab" data-panel="mixer">
+            <div class="strips" id="strips"></div>
             <h3>Mix direction</h3>
             <label class="field"><span>Loudness target</span>
               <select id="target">
                 <option value="-14">Streaming · −14 LUFS</option>
-                <option value="-10">Loud / club · −10 LUFS</option>
+                <option value="-9">Club · −9 LUFS</option>
                 <option value="-16">Podcast / VO · −16 LUFS</option>
                 <option value="-23">Broadcast · −23 LUFS</option>
               </select>
             </label>
-            <label class="field"><span>Vocal vs beat <output id="balanceOut">0 dB</output></span><input type="range" id="balance" min="-6" max="6" step="0.5" value="0" /></label>
-            <label class="field"><span>Space · reverb + delay <output id="spaceOut">100%</output></span><input type="range" id="space" min="0" max="2" step="0.05" value="1" /></label>
-            <label class="field"><span>Tempo (0 = detect)</span><input type="number" id="bpm" min="0" max="220" step="1" value="0" /></label>
-
-            <h3>Recording</h3>
-            <label class="field"><span>Latency trim <output id="latencyOut">0 ms</output></span><input type="range" id="latency" min="-120" max="120" step="1" value="0" /></label>
-            <label class="check"><input type="checkbox" id="usePrompter" checked /> Lyric prompter while recording</label>
-            <label class="check"><input type="checkbox" id="transcribe" /> <span>Live transcription <small>Chrome/Edge only; sends audio to the browser's speech service</small></span></label>
+            <label class="field"><span>Vocal vs beat <output id="balanceOut">0 dB</output></span><input type="range" id="balance" min="-12" max="12" step="0.5" /></label>
+            <div class="pair">
+              <label class="field"><span>Reverb</span><select id="reverbSel"><option value="auto">Auto</option><option value="booth">Booth 0.35s</option><option value="room">Room 0.8s</option><option value="plate">Plate 1.6s</option><option value="hall">Hall 2.6s</option></select></label>
+              <label class="field"><span>Delay</span><select id="delaySel"><option value="auto">Auto</option><option value="1/4">1/4</option><option value="1/8.">Dotted 1/8</option><option value="1/8">1/8</option><option value="1/16">1/16</option><option value="off">Off</option></select></label>
+            </div>
+            <label class="field"><span>Space amount <output id="spaceOut">100%</output></span><input type="range" id="space" min="0" max="2" step="0.05" /></label>
           </div>
 
           <div class="tab" data-panel="tune">
@@ -124,21 +180,24 @@
               <label class="field"><span>Scale</span><select id="scaleSel"></select></label>
             </div>
             <label class="check"><input type="checkbox" id="alignDoubles" checked /> <span>Line recorded doubles up to the lead <small>Timing (DTW + time-warp) and pitch-match</small></span></label>
-            <label class="field"><span>Alignment tightness <output id="tightOut">90%</output></span><input type="range" id="tight" min="0.3" max="1" step="0.05" value="0.9" /></label>
+            <label class="field"><span>Alignment tightness <output id="tightOut">90%</output></span><input type="range" id="tight" min="0.3" max="1" step="0.05" /></label>
             <h3>Pitch view · <span id="pitchLane" class="muted">select a lane</span></h3>
             <canvas class="pitchgraph" id="pitchGraph"></canvas>
             <div class="legend"><span><i style="background:#3d8f89"></i>Sung</span><span><i style="background:#ff7a1a"></i>Corrected</span><span><i style="background:rgba(255,255,255,.18)"></i>Scale notes</span></div>
           </div>
 
           <div class="tab" data-panel="lyrics">
+            <div class="row">
+              <button id="btnImportLyrics" class="btn">Import .txt</button>
+              <button id="btnPrompter" class="btn">Open prompter</button>
+            </div>
+            <input type="file" id="fileLyrics" accept=".txt,text/plain" hidden />
             <div class="lyric-wrap">
               <div class="gutter" id="gutter" aria-hidden="true"></div>
-              <textarea id="lyrics" wrap="off" spellcheck="false" placeholder="Write the verse. The gutter counts syllables per bar."></textarea>
+              <textarea id="lyrics" wrap="off" spellcheck="false" placeholder="Write the verse. Start a line with [bar 5] to sync it to bar 5. The gutter counts syllables."></textarea>
             </div>
-            <div class="row">
-              <button id="btnPrompter" class="btn">Open prompter</button>
-              <label class="field" style="flex:1"><span>Scroll speed</span><input type="range" id="scrollSpeed" min="0" max="80" step="1" value="18" /></label>
-            </div>
+            <label class="field"><span>Prompter scroll (unsynced lines)</span><input type="range" id="scrollSpeed" min="0" max="80" step="1" /></label>
+            <p class="muted small">While recording, ↓ / ↑ move the highlighted line by hand.</p>
           </div>
 
           <div class="tab" data-panel="engine">
@@ -149,12 +208,18 @@
     </main>
 
     <footer class="dock glass rise d4">
-      <div class="chain" id="chain"></div>
+      <div class="chain" id="chain" title="Click a stage to switch it on or off"></div>
       <div class="status" id="status">Ready.</div>
-      <div class="exports">
-        <button id="btnExportMix" class="btn" disabled>Master WAV</button>
-        <button id="btnExportStems" class="btn" disabled>Stems</button>
-        <button id="btnExportRaw" class="btn">Raw takes</button>
+      <button id="btnCancel" class="btn danger" hidden>Cancel</button>
+      <div class="menu-wrap">
+        <button id="btnExport" class="btn" title="Export (E)">Export ▾</button>
+        <div class="menu glass up" id="exportMenu" hidden>
+          <button data-exp="wav">Master · WAV 24-bit</button>
+          <button data-exp="mp3">Master · MP3 320 kbps</button>
+          <button data-exp="stems">Stems · WAV (one per track)</button>
+          <button data-exp="raw">Raw takes · WAV</button>
+          <label class="tb-field">Sample rate <select id="exportRate"><option value="48000">48 kHz</option><option value="44100">44.1 kHz</option></select></label>
+        </div>
       </div>
     </footer>
 

@@ -1,5 +1,8 @@
-import { FX, MODES, ROLES, estimateBpm } from "./automix.js";
+import { FX, MODES, ROLES, DELAYS, REVERBS, estimateBpm, makeImpulse } from "./automix.js";
 import { STAGES, renderStem, runEngine } from "./engine.js";
+import { Metronome, TapTempo, barBeat, barSeconds, snapTime } from "./metro.js";
+import { encodeMp3 } from "./mp3.js";
+import * as S from "./session.js";
 import * as store from "./store.js";
 import { NOTE_NAMES, SCALES, keyLabel } from "./tune.js";
 import { download, encodeWav } from "./wav.js";
@@ -7,39 +10,38 @@ import { download, encodeWav } from "./wav.js";
 const $ = (id) => document.getElementById(id);
 const ctx = new AudioContext({ latencyHint: "interactive" });
 const FS = ctx.sampleRate;
+const dbToLin = (db) => Math.pow(10, db / 20);
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-const DEFAULTS = {
-  targetLufs: -14, balance: 0, space: 1, bpm: 0, latencyMs: 0, nextRole: "lead", prompter: true, transcribe: false, scroll: 18,
-  tuneStyle: "natural", key: "auto", scale: "minor", alignDoubles: true, alignTight: 0.9,
-};
-const state = {
-  mode: "rap",
-  settings: { ...DEFAULTS },
-  lyrics: "",
-  beat: null, // { id, name, offset, mute, buffer }
-  tracks: [], // { id, name, role, fx, tune, dbl, offset, mute, solo, pan, trimDb, transcript, buffer }
-  run: null, // last engine result
-  virtual: [],
-  master: null,
-  masterNotes: [],
-  key: null,
-  profile: null,
-  stale: false,
-  ab: "A",
-  selected: null,
-  playhead: 0,
-  playing: null,
-  recording: null,
-  busy: false,
-};
+let session = S.newSession();
+const audio = new Map(); // takeId / beatId → AudioBuffer (immutable)
+const peaksCache = new Map();
+const history = new S.History();
+const metro = new Metronome(ctx);
+const tapper = new TapTempo();
 
-// ---------------------------------------------------------------- output graph + metering
+const ui = {
+  ab: "A", selTrack: null, selClip: null, playhead: 0, playStart: 0,
+  playing: null, recording: null, busy: false, run: null, stale: false,
+  key: null, profile: null, view: { start: 0, pps: 30, fit: true }, lyricLine: 0, cancel: null,
+  stageState: {},
+};
+const S_ = () => session.settings;
+
+// ---------------------------------------------------------------- output graph
+const masterGain = ctx.createGain();
+const limiter = ctx.createDynamicsCompressor();
+limiter.threshold.value = -1;
+limiter.knee.value = 0;
+limiter.ratio.value = 20;
+limiter.attack.value = 0.001;
+limiter.release.value = 0.1;
 const out = ctx.createGain();
 const rawBus = ctx.createGain();
 const mixBus = ctx.createGain();
-rawBus.connect(out);
-mixBus.connect(out);
-out.connect(ctx.destination);
+rawBus.connect(masterGain);
+mixBus.connect(masterGain);
+masterGain.connect(limiter).connect(out).connect(ctx.destination);
 const analyser = ctx.createAnalyser();
 analyser.fftSize = 4096;
 analyser.smoothingTimeConstant = 0.78;
@@ -51,13 +53,27 @@ anL.fftSize = anR.fftSize = 1024;
 out.connect(split);
 split.connect(anL, 0);
 split.connect(anR, 1);
+// Short-term loudness (approx): K-weighting-ish filters → analyser.
+const kShelf = ctx.createBiquadFilter();
+kShelf.type = "highshelf";
+kShelf.frequency.value = 1500;
+kShelf.gain.value = 4;
+const kHp = ctx.createBiquadFilter();
+kHp.type = "highpass";
+kHp.frequency.value = 60;
+const kAn = ctx.createAnalyser();
+kAn.fftSize = 2048;
+out.connect(kShelf).connect(kHp).connect(kAn);
 
 // ---------------------------------------------------------------- helpers
-const uid = () => Math.random().toString(36).slice(2, 10);
 const fmtTime = (s) => {
+  const neg = s < 0;
+  s = Math.abs(s);
   const m = Math.floor(s / 60);
-  return `${String(m).padStart(2, "0")}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
+  return `${neg ? "-" : ""}${String(m).padStart(2, "0")}:${(s - m * 60).toFixed(1).padStart(4, "0")}`;
 };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const safe = (s) => s.replace(/[^\w-]+/g, "_");
 let toastTimer;
 function toast(msg) {
   const t = $("toast");
@@ -67,12 +83,17 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 3400);
 }
 const status = (msg) => ($("status").textContent = msg);
-const end = (item) => (item?.buffer ? (item.offset || 0) + item.buffer.duration : 0);
-const projectEnd = () => Math.max(end(state.beat), ...state.tracks.map(end), state.master ? state.master.duration - 2 : 0, 0);
-const viewDuration = () => Math.max(30, projectEnd() + 4);
-const audible = (t) => !t.mute && (!state.tracks.some((x) => x.solo) || t.solo);
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-
+const bpm = () => S_().bpm || 0;
+const trackById = (id) => session.tracks.find((t) => t.id === id);
+const takeOf = (track, id) => track.takes.find((k) => k.id === id);
+const anySolo = () => session.tracks.some((t) => t.solo);
+const audible = (t) => !t.mute && (!anySolo() || t.solo);
+function projectEnd() {
+  const ends = session.tracks.map(S.trackEnd);
+  if (session.beat && audio.get(session.beat.id)) ends.push((session.beat.offset || 0) + audio.get(session.beat.id).duration);
+  if (ui.master) ends.push(ui.master.duration - 2);
+  return Math.max(0, ...ends);
+}
 function moveThumb(seg) {
   const on = seg.querySelector("button.on");
   const th = seg.querySelector(".thumb");
@@ -85,10 +106,9 @@ function setSeg(id, attr, value) {
   seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset[attr] === value));
   moveThumb(seg);
 }
-
-async function resample(buf) {
-  if (buf.sampleRate === FS) return buf;
-  const oc = new OfflineAudioContext(buf.numberOfChannels, Math.ceil(buf.duration * FS), FS);
+async function resample(buf, rate = FS) {
+  if (buf.sampleRate === rate) return buf;
+  const oc = new OfflineAudioContext(buf.numberOfChannels, Math.ceil(buf.duration * rate), rate);
   const s = oc.createBufferSource();
   s.buffer = buf;
   s.connect(oc.destination);
@@ -107,53 +127,60 @@ async function toMono(buffer) {
   return b;
 }
 
-// ---------------------------------------------------------------- persistence
+// ---------------------------------------------------------------- persistence + undo
 let saveTimer;
-function saveMeta() {
+function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const strip = ({ buffer: _b, ...rest }) => rest;
-    store.set("project", {
-      mode: state.mode,
-      settings: state.settings,
-      lyrics: state.lyrics,
-      beat: state.beat ? strip(state.beat) : null,
-      tracks: state.tracks.map(strip),
-    });
-  }, 300);
+  saveTimer = setTimeout(() => S.saveSession(session), 600);
 }
 const saveAudio = (id, buffer) =>
-  store.set(`audio:${id}`, {
-    sampleRate: buffer.sampleRate,
-    channels: Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).slice()),
-  });
+  store.set(`audio:${id}`, { sampleRate: buffer.sampleRate, channels: Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).slice()) });
 async function loadAudio(id) {
+  if (audio.has(id)) return audio.get(id);
   const rec = await store.get(`audio:${id}`);
   if (!rec) return null;
   const b = new AudioBuffer({ numberOfChannels: rec.channels.length, length: rec.channels[0].length, sampleRate: rec.sampleRate });
   rec.channels.forEach((d, c) => b.copyToChannel(d, c));
-  return resample(b);
+  const r = await resample(b);
+  audio.set(id, r);
+  return r;
 }
-async function restore() {
-  state.profile = (await store.get("profile")) || null;
-  const taste = await store.get("taste");
-  const p = await store.get("project");
-  if (!p) {
-    if (taste) Object.assign(state.settings, taste); // a fresh project starts from what you usually pick
-    return;
+
+/**
+ * Every user change goes through here: snapshot for undo, apply, save, redraw.
+ * `key` coalesces slider drags into one undo step; `audioChange` marks the mix stale.
+ */
+function edit(label, fn, { key = null, audioChange = true, redraw = true } = {}) {
+  history.push(session, label, key);
+  fn();
+  if (audioChange) markStale();
+  save();
+  if (redraw) renderAll();
+  updateUndo();
+}
+function applyHistory(r, verb) {
+  if (!r) return toast(`Nothing to ${verb}.`);
+  stopPlayback();
+  session = r.session;
+  markStale();
+  save();
+  bindSettingsToUi();
+  renderAll();
+  updateUndo();
+  toast(`${verb === "undo" ? "Undid" : "Redid"}: ${r.label}`);
+}
+const undo = () => applyHistory(history.undo(session), "undo");
+const redo = () => applyHistory(history.redo(session), "redo");
+function updateUndo() {
+  $("btnUndo").disabled = !history.undoStack.length;
+  $("btnRedo").disabled = !history.redoStack.length;
+  $("btnUndo").title = history.undoStack.length ? `Undo ${history.undoStack.at(-1).label} (Ctrl+Z)` : "Undo (Ctrl+Z)";
+}
+function markStale() {
+  if (ui.master && !ui.stale) {
+    ui.stale = true;
+    renderReport();
   }
-  state.mode = p.mode || "rap";
-  Object.assign(state.settings, p.settings || {});
-  state.lyrics = p.lyrics || "";
-  if (p.beat) {
-    const buffer = await loadAudio(p.beat.id);
-    if (buffer) state.beat = { ...p.beat, buffer };
-  }
-  for (const t of p.tracks || []) {
-    const buffer = await loadAudio(t.id);
-    if (buffer) state.tracks.push({ fx: "clean", tune: true, dbl: "off", ...t, buffer });
-  }
-  state.selected = state.tracks[0]?.id || null;
 }
 
 // ---------------------------------------------------------------- mic + recorder
@@ -181,9 +208,9 @@ class BoothRecorder extends AudioWorkletProcessor {
 }
 registerProcessor("booth-recorder", BoothRecorder);`;
 
-const mic = { stream: null, source: null, node: null, monitor: ctx.createGain(), chunks: [], onDone: null, peak: 0 };
+const mic = { stream: null, source: null, node: null, gain: ctx.createGain(), monitor: ctx.createGain(), chunks: [], onDone: null, peak: 0, clipUntil: 0 };
 mic.monitor.gain.value = 0;
-mic.monitor.connect(ctx.destination);
+mic.gain.connect(mic.monitor).connect(ctx.destination);
 let workletReady = null;
 
 async function ensureMic() {
@@ -200,22 +227,37 @@ async function ensureMic() {
     mic.node = new AudioWorkletNode(ctx, "booth-recorder", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
     const sink = ctx.createGain();
     sink.gain.value = 0;
-    mic.source.connect(mic.node).connect(sink).connect(ctx.destination);
-    mic.source.connect(mic.monitor);
+    mic.gain.gain.value = S_().inputGainDb <= -60 ? 0 : dbToLin(S_().inputGainDb);
+    mic.source.connect(mic.gain);
+    mic.gain.connect(mic.node).connect(sink).connect(ctx.destination);
     mic.node.port.onmessage = (e) => {
       const d = e.data;
       if (d.type === "chunk") mic.chunks.push(d.data);
-      else if (d.type === "meter") mic.peak = d.peak;
-      else if (d.type === "done") mic.onDone?.();
+      else if (d.type === "meter") {
+        mic.peak = d.peak;
+        if (d.peak >= 0.98) mic.clipUntil = performance.now() + 2000;
+      } else if (d.type === "done") mic.onDone?.();
     };
     $("btnMic").textContent = "Mic live";
     $("btnMic").classList.add("live");
+    const devId = mic.stream.getAudioTracks()[0]?.getSettings?.().deviceId;
+    try {
+      const saved = localStorage.getItem(`mvb.latency.${devId}`);
+      if (saved != null) {
+        S_().latencyMs = +saved;
+        $("latency").value = saved;
+        $("latencyOut").textContent = `${saved} ms`;
+      }
+    } catch {
+      /* storage blocked */
+    }
     await listDevices();
+    updateRoundTrip();
     startMeters();
     return true;
   } catch (err) {
     console.error(err);
-    toast(`Mic unavailable: ${err.message}. Open the booth through its launcher (localhost).`);
+    toast(`Mic unavailable: ${err.message}`);
     return false;
   }
 }
@@ -235,9 +277,70 @@ async function listDevices() {
   for (const d of devices) if (d.deviceId && d.deviceId !== "default") sel.add(new Option(d.label || `Input ${sel.length}`, d.deviceId));
   sel.value = cur;
 }
-function latencySeconds() {
-  const trackLatency = mic.stream?.getAudioTracks()[0]?.getSettings?.().latency || 0;
-  return (ctx.outputLatency || 0) + (ctx.baseLatency || 0) + trackLatency + state.settings.latencyMs / 1000;
+const autoLatency = () => (ctx.outputLatency || 0) + (ctx.baseLatency || 0) + (mic.stream?.getAudioTracks()[0]?.getSettings?.().latency || 0);
+const latencySeconds = () => autoLatency() + S_().latencyMs / 1000;
+function updateRoundTrip() {
+  const ms = Math.round(latencySeconds() * 1000);
+  $("rtOut").textContent = `Round trip: ${ms} ms${ms > 25 ? " · monitor may feel late" : ""}`;
+}
+
+async function calibrate() {
+  if (!(await ensureMic())) return;
+  stopPlayback();
+  status("Calibrating… keep quiet.");
+  mic.chunks = [];
+  const t0 = ctx.currentTime + 0.3;
+  const gap = 0.5;
+  mic.node.port.postMessage({ cmd: "start", at: t0 });
+  const lvl = metro.out.gain.value;
+  metro.level = 1;
+  for (let k = 0; k < 4; k++) metro.click(t0 + k * gap, true);
+  await new Promise((r) => setTimeout(r, (0.3 + 4 * gap + 0.4) * 1000));
+  await new Promise((resolve) => {
+    mic.onDone = resolve;
+    mic.node.port.postMessage({ cmd: "stop" });
+  });
+  metro.level = lvl;
+  const total = mic.chunks.reduce((a, c) => a + c.length, 0);
+  const data = new Float32Array(total);
+  let o = 0;
+  for (const c of mic.chunks) {
+    data.set(c, o);
+    o += c.length;
+  }
+  mic.chunks = [];
+  const offs = [];
+  for (let k = 0; k < 4; k++) {
+    const a = Math.round(k * gap * FS);
+    const b = Math.min(data.length, a + Math.round(0.45 * FS));
+    let mx = 0;
+    for (let i = a; i < b; i++) mx = Math.max(mx, Math.abs(data[i]));
+    if (mx < 0.01) continue;
+    for (let i = a; i < b; i++) {
+      if (Math.abs(data[i]) > mx * 0.3) {
+        offs.push((i - a) / FS);
+        break;
+      }
+    }
+  }
+  if (offs.length < 2) {
+    status("Calibration failed: no clicks heard. Turn up your speakers or hold your headphones to the mic.");
+    return;
+  }
+  offs.sort((x, y) => x - y);
+  const measured = offs[Math.floor(offs.length / 2)];
+  const trim = clamp(Math.round((measured - autoLatency()) * 1000), -200, 200);
+  edit("Calibrate latency", () => (S_().latencyMs = trim), { audioChange: false, redraw: false });
+  $("latency").value = trim;
+  $("latencyOut").textContent = `${trim > 0 ? "+" : ""}${trim} ms`;
+  try {
+    const devId = mic.stream.getAudioTracks()[0]?.getSettings?.().deviceId;
+    localStorage.setItem(`mvb.latency.${devId}`, String(trim));
+  } catch {
+    /* storage blocked */
+  }
+  updateRoundTrip();
+  status(`Calibrated: measured ${Math.round(measured * 1000)} ms round trip → trim ${trim} ms (saved for this mic).`);
 }
 
 // ---------------------------------------------------------------- transcription
@@ -246,14 +349,14 @@ let transcript = "";
 function startTranscription() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   transcript = "";
-  if (!SR || !state.settings.transcribe) return;
+  if (!SR || !S_().transcribe) return;
   recog = new SR();
   recog.continuous = true;
   recog.interimResults = false;
   recog.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) transcript += `${e.results[i][0].transcript.trim()}\n`;
   };
-  recog.onend = () => state.recording && recog?.start();
+  recog.onend = () => ui.recording && recog?.start();
   try {
     recog.start();
   } catch {
@@ -267,88 +370,268 @@ function stopTranscription() {
   return transcript.trim();
 }
 
+// ---------------------------------------------------------------- live mixer graph
+let live = null; // per-playback nodes
+function buildLive() {
+  const verb = ctx.createConvolver();
+  const rv = S_().reverb !== "auto" ? REVERBS[S_().reverb] : MODES[session.mode].reverb;
+  verb.buffer = makeImpulse(ctx, rv.seconds, session.mode);
+  const verbIn = ctx.createGain();
+  verbIn.connect(verb).connect(rawBus);
+  const dly = ctx.createDelay(2);
+  const div = S_().delayDiv === "off" ? 0 : S_().delayDiv !== "auto" ? DELAYS[S_().delayDiv] : MODES[session.mode].delay?.division || 0;
+  dly.delayTime.value = bpm() && div ? clamp((60 / bpm()) * div, 0.05, 1.9) : 0.3;
+  const fb = ctx.createGain();
+  fb.gain.value = 0.25;
+  const dlp = ctx.createBiquadFilter();
+  dlp.type = "lowpass";
+  dlp.frequency.value = 4200;
+  const dlyIn = ctx.createGain();
+  dlyIn.gain.value = div && bpm() ? 1 : 0;
+  dlyIn.connect(dly).connect(dlp).connect(fb).connect(dly);
+  dlp.connect(rawBus);
+  const tracks = new Map();
+  for (const t of session.tracks) {
+    const g = ctx.createGain();
+    const p = ctx.createStereoPanner();
+    const m = ctx.createAnalyser();
+    m.fftSize = 512;
+    const rs = ctx.createGain();
+    const ds = ctx.createGain();
+    g.connect(p).connect(m);
+    p.connect(rawBus);
+    p.connect(rs).connect(verbIn);
+    p.connect(ds).connect(dlyIn);
+    tracks.set(t.id, { g, p, m, rs, ds });
+  }
+  const beatG = ctx.createGain();
+  const beatM = ctx.createAnalyser();
+  beatM.fftSize = 512;
+  beatG.connect(beatM);
+  beatG.connect(rawBus);
+  live = { verb, dly, tracks, beatG, beatM, nodes: [verb, verbIn, dly, fb, dlp, dlyIn, beatG] };
+  applyMixer();
+}
+function applyMixer() {
+  if (!live) return;
+  const sp = S_().space ?? 1;
+  for (const t of session.tracks) {
+    const n = live.tracks.get(t.id);
+    if (!n) continue;
+    const on = audible(t) && !(ui.recording && t.armed);
+    n.g.gain.setTargetAtTime(on ? dbToLin(t.volumeDb) : 0, ctx.currentTime, 0.01);
+    n.p.pan.setTargetAtTime(t.pan || 0, ctx.currentTime, 0.01);
+    n.rs.gain.value = dbToLin(-20) * (t.revSend ?? 1) * sp;
+    n.ds.gain.value = dbToLin(-24) * (t.dlySend ?? 1) * sp;
+  }
+  if (session.beat) live.beatG.gain.setTargetAtTime(session.beat.mute ? 0 : dbToLin(session.beat.volumeDb || 0), ctx.currentTime, 0.01);
+  masterGain.gain.setTargetAtTime(dbToLin(session.master.volumeDb || 0), ctx.currentTime, 0.01);
+}
+function teardownLive() {
+  if (!live) return;
+  for (const n of [...live.nodes, ...[...live.tracks.values()].flatMap((x) => [x.g, x.p, x.m, x.rs, x.ds])]) n.disconnect();
+  live = null;
+}
+
 // ---------------------------------------------------------------- transport
-function stopPlayback() {
-  if (!state.playing) return;
-  state.playhead = currentPos();
-  for (const s of state.playing.sources) {
+const isLoop = () => session.loop.on && session.loop.end - session.loop.start > 0.25;
+
+/** Schedule timeline segment [a, b) to sound at audio time T. */
+function scheduleSegment(a, b, T, sources, { cue }) {
+  const stopAt = T + (b - a);
+  const add = (buf, bufStartTime, dest, gainNode) => {
+    const s0 = Math.max(a, bufStartTime);
+    const e0 = Math.min(b, bufStartTime + buf.duration);
+    if (e0 - s0 <= 0.002) return null;
+    const s = ctx.createBufferSource();
+    s.buffer = buf;
+    s.connect(gainNode || dest);
+    s.start(T + (s0 - a), s0 - bufStartTime, e0 - s0);
+    s.stop(stopAt + 0.01);
+    sources.push(s);
+    return { s0, e0 };
+  };
+  const useMix = !cue && ui.ab === "B" && ui.master && !ui.stale;
+  if (useMix) {
+    add(ui.master, 0, mixBus);
+    return;
+  }
+  if (session.beat && audio.get(session.beat.id)) add(audio.get(session.beat.id), session.beat.offset || 0, live.beatG);
+  for (const t of session.tracks) {
+    const n = live.tracks.get(t.id);
+    if (!n) continue;
+    for (const c of t.clips) {
+      const take = takeOf(t, c.takeId);
+      const buf = audio.get(c.takeId);
+      if (!take || !buf) continue;
+      const s0 = Math.max(a, c.start);
+      const e0 = Math.min(b, c.end);
+      if (e0 - s0 <= 0.002) continue;
+      const cg = ctx.createGain();
+      cg.connect(n.g);
+      const g = dbToLin(c.gainDb || 0);
+      const tS = T + (s0 - a);
+      const tE = T + (e0 - a);
+      const fi = Math.max(0.003, c.fadeIn || 0);
+      const fo = Math.max(0.003, c.fadeOut || 0);
+      // Fade envelope relative to the clip's own edges.
+      const env = (t0) => {
+        let w = g;
+        if (t0 - c.start < fi) w *= Math.max(0, (t0 - c.start) / fi);
+        if (c.end - t0 < fo) w *= Math.max(0, (c.end - t0) / fo);
+        return w;
+      };
+      cg.gain.setValueAtTime(env(s0), tS);
+      if (c.start + fi > s0 && c.start + fi < e0) cg.gain.linearRampToValueAtTime(g, T + (c.start + fi - a));
+      if (c.end - fo > s0 && c.end - fo < e0) cg.gain.setValueAtTime(g, T + (c.end - fo - a));
+      cg.gain.linearRampToValueAtTime(env(e0), tE);
+      const s = ctx.createBufferSource();
+      s.buffer = buf;
+      s.connect(cg);
+      const srcOff = s0 - (c.shift || 0) - take.at;
+      if (srcOff >= buf.duration) continue;
+      s.start(tS, Math.max(0, srcOff), Math.min(e0 - s0, buf.duration - Math.max(0, srcOff)));
+      sources.push(s);
+    }
+  }
+}
+
+async function startPlayback(from = ui.playhead, { cue = false, countIn = 0 } = {}) {
+  await ctx.resume();
+  stopPlayback(false);
+  buildLive();
+  const sources = [];
+  const pre = countIn ? countIn * barSeconds(bpm()) : 0;
+  const t0 = ctx.currentTime + 0.08 + pre;
+  const loop = isLoop() ? { ...session.loop, L: session.loop.end - session.loop.start } : null;
+  if (loop) from = loop.start;
+  rawBus.gain.value = 1;
+  mixBus.gain.value = 1;
+  ui.playing = { t0, from, loop, sources, cue, nextPass: null, clickHorizon: from };
+  ui.playStart = from;
+  if (pre && bpm()) metro.schedule(bpm(), from - pre, from, from, t0);
+  if (loop) {
+    schedulePass(t0);
+  } else {
+    scheduleSegment(from, Math.max(from + 0.1, projectEnd() + 1), t0, sources, { cue });
+  }
+  document.body.classList.add("playing");
+  requestAnimationFrame(frame);
+  startMeters();
+  return t0;
+}
+function schedulePass(T) {
+  const p = ui.playing;
+  scheduleSegment(p.loop.start, p.loop.end, T, p.sources, { cue: p.cue });
+  if (S_().click) metro.schedule(bpm(), p.loop.start, p.loop.end, p.loop.start, T);
+  p.nextPass = T + p.loop.L;
+}
+function stopPlayback(keep = true) {
+  metro.stop();
+  if (!ui.playing) return;
+  if (keep) ui.playhead = currentPos();
+  for (const s of ui.playing.sources) {
     try {
       s.stop();
     } catch {
       /* already stopped */
     }
   }
-  state.playing = null;
+  ui.playing = null;
+  teardownLive();
   document.body.classList.remove("playing");
 }
 function currentPos() {
-  if (!state.playing) return state.playhead;
-  return state.playing.from + Math.max(0, ctx.currentTime - state.playing.t0);
+  const p = ui.playing;
+  if (!p) return ui.playhead;
+  const el = ctx.currentTime - p.t0;
+  if (el < 0) return p.from + el; // count-in
+  if (p.loop) return p.loop.start + (el % p.loop.L);
+  return p.from + el;
 }
-function schedule(buffer, offset, from, t0, dest, sources) {
-  if (!buffer) return;
-  const rel = from - offset;
-  if (rel >= buffer.duration) return;
-  const s = ctx.createBufferSource();
-  s.buffer = buffer;
-  s.connect(dest);
-  if (rel >= 0) s.start(t0, rel);
-  else s.start(t0 - rel, 0);
-  sources.push(s);
+const pause = () => {
+  if (ui.recording) return finishRecording();
+  stopPlayback(true);
+  drawPlayhead();
+};
+function stop() {
+  if (ui.recording) return finishRecording();
+  stopPlayback(false);
+  ui.playhead = ui.playStart;
+  drawPlayhead();
 }
-async function startPlayback(from = state.playhead, { cue = false } = {}) {
-  await ctx.resume();
-  stopPlayback();
-  const t0 = ctx.currentTime + 0.08;
-  const sources = [];
-  const useMix = !cue && state.ab === "B" && state.master;
-  rawBus.gain.value = useMix ? 0 : 1;
-  mixBus.gain.value = useMix ? 1 : 0;
-  if (state.beat && !state.beat.mute) schedule(state.beat.buffer, state.beat.offset || 0, from, t0, rawBus, sources);
-  for (const t of state.tracks) if (audible(t)) schedule(t.buffer, t.offset || 0, from, t0, rawBus, sources);
-  if (state.master && !cue) schedule(state.master, 0, from, t0, mixBus, sources);
-  state.playing = { t0, from, sources };
-  state.playhead = from;
-  document.body.classList.add("playing");
-  requestAnimationFrame(frame);
-  startMeters();
-  return t0;
+function returnToZero() {
+  const was = ui.playing && !ui.recording;
+  stopPlayback(false);
+  ui.playhead = 0;
+  ui.view.start = 0;
+  renderLanesOnly();
+  if (was) startPlayback(0);
+}
+function seek(t) {
+  if (ui.recording) return;
+  const was = !!ui.playing;
+  stopPlayback(false);
+  ui.playhead = Math.max(0, t);
+  drawPlayhead();
+  if (was) startPlayback(ui.playhead);
+}
+function nudge(dir, bar) {
+  const step = bpm() ? (bar ? barSeconds(bpm()) : 60 / bpm()) : bar ? 5 : 1;
+  seek(Math.max(0, (bpm() ? snapTime(currentPos(), bpm(), 1) : currentPos()) + dir * step));
 }
 function setAB(ab) {
-  if (ab === "B" && !state.master) return toast("Run Automix first to hear the engine's mix.");
-  state.ab = ab;
-  const useMix = ab === "B";
-  rawBus.gain.setTargetAtTime(useMix ? 0 : 1, ctx.currentTime, 0.008);
-  mixBus.gain.setTargetAtTime(useMix ? 1 : 0, ctx.currentTime, 0.008);
+  if (ab === "B" && (!ui.master || ui.stale)) return toast(ui.master ? "The mix is out of date. Run Automix again." : "Run Automix first to hear the engine's mix.");
+  ui.ab = ab;
   setSeg("abSeg", "ab", ab);
-  renderLanes();
+  if (ui.playing && !ui.recording) startPlayback(currentPos());
+  renderLanesOnly();
 }
+
 let lastPitchDraw = 0;
 function frame() {
+  const p = ui.playing;
   const pos = currentPos();
-  $("clock").textContent = fmtTime(pos);
-  placePlayhead(pos);
-  if (state.playing && !state.recording && pos > projectEnd() + 0.5) {
-    stopPlayback();
-    state.playhead = 0;
+  if (p) {
+    if (p.loop && ctx.currentTime > p.nextPass - 0.4) schedulePass(p.nextPass);
+    if (!p.loop && S_().click && pos > p.clickHorizon - 1) {
+      const from = Math.max(p.clickHorizon, pos);
+      metro.schedule(bpm(), from, from + 2, p.from, p.t0);
+      p.clickHorizon = from + 2;
+    }
+    if (!p.loop && !ui.recording && pos > projectEnd() + 0.5) {
+      stopPlayback(false);
+      ui.playhead = ui.playStart;
+    }
+    // Follow the playhead.
+    const vw = viewWidth() / ui.view.pps;
+    if (pos > ui.view.start + vw * 0.92 || pos < ui.view.start) {
+      ui.view.start = Math.max(0, pos - vw * 0.1);
+      ui.view.fit = false;
+      renderLanesOnly();
+    }
   }
-  if (state.recording) prompterTick();
+  drawPlayhead(pos);
+  if (ui.recording || !$("prompter").hidden) prompterTick(pos);
   const now = performance.now();
-  if (now - lastPitchDraw > 120 && document.querySelector('.tab.on[data-panel="tune"]')) {
+  if (now - lastPitchDraw > 150 && document.querySelector('.tab.on[data-panel="tune"]')) {
     lastPitchDraw = now;
     drawPitch();
   }
-  if (state.playing) requestAnimationFrame(frame);
+  if (ui.playing) requestAnimationFrame(frame);
 }
 
-// ---------------------------------------------------------------- meters + spectrum
+// ---------------------------------------------------------------- meters
 let meterLoop = false;
 const spec = new Float32Array(analyser.frequencyBinCount);
-const tbuf = new Float32Array(1024);
+const tbuf = new Float32Array(2048);
+const kHist = [];
 function peakOf(an) {
-  an.getFloatTimeDomainData(tbuf);
+  const n = an.fftSize;
+  const b = tbuf.subarray(0, n);
+  an.getFloatTimeDomainData(b);
   let p = 0;
-  for (let i = 0; i < tbuf.length; i++) p = Math.max(p, Math.abs(tbuf[i]));
+  for (let i = 0; i < n; i++) p = Math.max(p, Math.abs(b[i]));
   return p;
 }
 const pct = (lin) => `${Math.max(0, Math.min(100, ((20 * Math.log10(lin + 1e-9) + 60) / 60) * 100))}%`;
@@ -372,13 +655,11 @@ function startMeters() {
     grad.addColorStop(1, "#ff7a1a");
     g.beginPath();
     g.moveTo(0, h);
-    const bars = 96;
-    for (let b = 0; b <= bars; b++) {
-      const f = 30 * Math.pow(18000 / 30, b / bars);
+    for (let b = 0; b <= 96; b++) {
+      const f = 30 * Math.pow(18000 / 30, b / 96);
       const i = Math.min(spec.length - 1, Math.round((f / (FS / 2)) * spec.length));
       const db = Number.isFinite(spec[i]) ? spec[i] : -120;
-      const y = h - Math.max(0, Math.min(1, (db + 100) / 80)) * h;
-      g.lineTo((b / bars) * w, y);
+      g.lineTo((b / 96) * w, h - Math.max(0, Math.min(1, (db + 100) / 80)) * h);
     }
     g.lineTo(w, h);
     g.closePath();
@@ -388,85 +669,145 @@ function startMeters() {
     g.globalAlpha = 1;
     g.strokeStyle = grad;
     g.lineWidth = 1.5;
-    g.shadowColor = "#ff7a1a";
-    g.shadowBlur = 8;
     g.stroke();
-    g.shadowBlur = 0;
     const l = peakOf(anL), r = peakOf(anR);
     $("mL").style.height = pct(l);
     $("mR").style.height = pct(r);
     $("mIn").style.height = pct(mic.peak);
+    $("clipLed").classList.toggle("on", performance.now() < mic.clipUntil);
     $("roMic").textContent = mic.node ? `${(20 * Math.log10(mic.peak + 1e-9)).toFixed(0)} dB` : "off";
-    if (state.playing) $("roPeak").textContent = `${(20 * Math.log10(Math.max(l, r) + 1e-9)).toFixed(1)} dB`;
-    if (state.playing || mic.node) requestAnimationFrame(draw);
+    if (ui.playing) {
+      const pk = 20 * Math.log10(Math.max(l, r) + 1e-9);
+      $("roPeak").textContent = pk < -90 ? "—" : `${pk.toFixed(1)} dB`;
+      const kb = tbuf.subarray(0, kAn.fftSize);
+      kAn.getFloatTimeDomainData(kb);
+      let ms = 0;
+      for (let i = 0; i < kb.length; i++) ms += kb[i] * kb[i];
+      kHist.push(ms / kb.length);
+      if (kHist.length > 180) kHist.shift(); // ≈3 s at 60 fps
+      const avg = kHist.reduce((a, b) => a + b, 0) / kHist.length;
+      const st = -0.691 + 10 * Math.log10(avg * 2 + 1e-12);
+      $("roLufs").textContent = st < -70 ? "—" : `${st.toFixed(1)} LUFS`;
+    }
+    if (live && document.querySelector('.tab.on[data-panel="mixer"]')) {
+      for (const [id, n] of live.tracks) {
+        const el = document.querySelector(`.strip[data-id="${id}"] .smeter b`);
+        if (el) el.style.height = pct(peakOf(n.m));
+      }
+      const be = document.querySelector('.strip[data-id="beat"] .smeter b');
+      if (be) be.style.height = pct(peakOf(live.beatM));
+      const me = document.querySelector('.strip[data-id="master"] .smeter b');
+      if (me) me.style.height = pct(Math.max(l, r));
+    }
+    if (ui.playing || mic.node) requestAnimationFrame(draw);
     else meterLoop = false;
   };
   requestAnimationFrame(draw);
 }
 
 // ---------------------------------------------------------------- recording
+function armedTrack() {
+  return session.tracks.find((t) => t.armed);
+}
+function arm(track) {
+  edit(`Arm ${track.name}`, () => session.tracks.forEach((t) => (t.armed = t === track ? !t.armed : false)), { audioChange: false });
+}
 async function toggleRecord() {
-  if (state.recording) return finishRecording();
-  if (state.busy) return;
+  if (ui.recording) return finishRecording();
+  if (ui.busy) return;
+  let track = armedTrack();
+  if (!track) {
+    const sel = trackById(ui.selTrack);
+    if (sel) {
+      history.push(session, `Arm ${sel.name}`);
+      session.tracks.forEach((t) => (t.armed = t === sel));
+      track = sel;
+    } else {
+      history.push(session, "Add track");
+      track = S.newTrack(session, "lead");
+      track.armed = true;
+      session.tracks.push(track);
+      ui.selTrack = track.id;
+    }
+    renderAll();
+  }
   if (!(await ensureMic())) return;
   mic.chunks = [];
-  const from = state.playhead;
-  const t0 = await startPlayback(from, { cue: true });
+  const loop = isLoop();
+  const from = loop ? session.loop.start : ui.playhead;
+  ui.recording = { trackId: track.id, from, loop: loop ? { ...session.loop, L: session.loop.end - session.loop.start } : null };
+  const t0 = await startPlayback(from, { cue: true, countIn: bpm() ? +S_().countIn || 0 : 0 });
   mic.node.port.postMessage({ cmd: "start", at: t0 });
-  state.recording = { from, role: state.settings.nextRole };
   document.body.classList.add("recording");
+  applyMixer();
+  ui.lyricLine = 0;
   startTranscription();
-  if (state.settings.prompter && state.lyrics.trim()) openPrompter();
-  status("Recording… R or Space to stop.");
+  if (S_().prompter && session.lyrics.trim()) openPrompter();
+  status(loop ? "Loop recording… every pass becomes a take. R or Space to stop." : "Recording… R or Space to stop.");
 }
 async function finishRecording() {
-  const rec = state.recording;
+  const rec = ui.recording;
   await new Promise((resolve) => {
     mic.onDone = resolve;
     mic.node.port.postMessage({ cmd: "stop" });
   });
-  state.recording = null;
+  ui.recording = null;
   document.body.classList.remove("recording");
-  stopPlayback();
+  stopPlayback(false);
   closePrompter();
   const text = stopTranscription();
   const total = mic.chunks.reduce((a, c) => a + c.length, 0);
   const trim = Math.round(latencySeconds() * FS);
-  if (total - trim < FS * 0.3) return status("Take too short — discarded.");
-  const data = new Float32Array(total);
+  const data = new Float32Array(Math.max(0, total));
   let o = 0;
   for (const c of mic.chunks) {
     data.set(c, o);
     o += c.length;
   }
   mic.chunks = [];
-  let take;
-  if (trim >= 0) take = data.subarray(trim);
+  let pcm;
+  if (trim >= 0) pcm = data.subarray(Math.min(trim, data.length));
   else {
-    take = new Float32Array(total - trim);
-    take.set(data, -trim);
+    pcm = new Float32Array(data.length - trim);
+    pcm.set(data, -trim);
   }
-  const buffer = ctx.createBuffer(1, take.length, FS);
-  buffer.copyToChannel(take, 0);
-  const n = state.tracks.filter((t) => t.role === rec.role).length + 1;
-  addTrack({ name: `${ROLES[rec.role].label} ${n}`, role: rec.role, offset: rec.from, buffer, transcript: text });
-  state.playhead = rec.from;
-  status(`Take saved · ${buffer.duration.toFixed(1)}s · latency comp ${Math.round(latencySeconds() * 1000)} ms`);
-}
-function addTrack(t) {
-  const track = { id: uid(), mute: false, solo: false, pan: 0, trimDb: 0, transcript: "", offset: 0, fx: "clean", tune: true, dbl: "off", ...t };
-  state.tracks.push(track);
-  state.selected = track.id;
-  saveAudio(track.id, track.buffer);
+  const track = trackById(rec.trackId);
+  if (!track || pcm.length < FS * 0.3) {
+    ui.playhead = rec.from;
+    return status("Take too short — discarded.");
+  }
+  // Loop record: slice the continuous capture into one take per pass.
+  const passes = [];
+  if (rec.loop) {
+    const L = Math.round(rec.loop.L * FS);
+    for (let p = 0; p * L < pcm.length; p++) {
+      const seg = pcm.subarray(p * L, Math.min(pcm.length, (p + 1) * L));
+      if (seg.length >= FS * 1 || p === 0) passes.push(seg);
+    }
+  } else passes.push(pcm);
+  history.push(session, passes.length > 1 ? `Record ${passes.length} takes` : "Record take");
+  let last = null;
+  let lastFull = null;
+  for (const seg of passes) {
+    const buffer = ctx.createBuffer(1, seg.length, FS);
+    buffer.copyToChannel(seg, 0);
+    const take = { id: S.uid(), name: `Take ${track.takes.length + 1}`, at: rec.from, duration: buffer.duration, best: false, transcript: text };
+    audio.set(take.id, buffer);
+    saveAudio(take.id, buffer);
+    track.takes.push(take);
+    last = take;
+    if (!rec.loop || buffer.duration >= rec.loop.L * 0.98) lastFull = take;
+  }
+  // A stopped-early final loop pass stays as a take, but the last full pass goes on the track.
+  S.addTakeClip(track, lastFull || last);
+  if (passes.length > 1) track.showTakes = true;
+  ui.selTrack = track.id;
+  ui.playhead = rec.from;
   markStale();
-  saveMeta();
-  renderLanes();
-}
-function markStale() {
-  if (state.master && !state.stale) {
-    state.stale = true;
-    renderReport();
-  }
+  save();
+  renderAll();
+  updateUndo();
+  status(`${passes.length > 1 ? `${passes.length} takes` : "Take"} saved on ${track.name} · latency comp ${Math.round(latencySeconds() * 1000)} ms`);
 }
 
 // ---------------------------------------------------------------- imports
@@ -477,26 +818,40 @@ async function importBeat(file) {
   try {
     status(`Decoding ${file.name}…`);
     const buffer = await decodeFile(file);
-    const id = uid();
-    if (state.beat) store.del(`audio:${state.beat.id}`);
-    state.beat = { id, name: file.name.replace(/\.[^.]+$/, ""), offset: 0, mute: false, buffer };
+    const id = S.uid();
+    audio.set(id, buffer);
     saveAudio(id, buffer);
-    state.settings.bpm = estimateBpm(buffer.getChannelData(0), FS);
-    $("bpm").value = state.settings.bpm;
-    updateChips();
-    markStale();
-    saveMeta();
-    renderLanes();
-    status(`Beat loaded · ${state.settings.bpm || "?"} BPM detected.`);
+    const detected = estimateBpm(buffer.getChannelData(0), FS);
+    edit("Import beat", () => {
+      session.beat = { id, name: file.name.replace(/\.[^.]+$/, ""), volumeDb: 0, mute: false, offset: 0 };
+      if (!S_().bpm) S_().bpm = detected;
+    });
+    $("bpm").value = S_().bpm;
+    if (ui.view.fit) fitView();
+    status(`Beat loaded · ${detected || "?"} BPM detected.`);
   } catch (err) {
     toast(`Couldn't read that file: ${err.message}`);
   }
 }
-async function importVocal(file) {
+async function importVocal(file, type) {
   try {
     status(`Decoding ${file.name}…`);
     const buffer = await toMono(await decodeFile(file));
-    addTrack({ name: file.name.replace(/\.[^.]+$/, ""), role: state.settings.nextRole, buffer });
+    edit("Import vocal", () => {
+      let track = trackById(ui.selTrack);
+      if (!track || track.clips.length) {
+        track = S.newTrack(session, type || track?.type || "lead");
+        track.name = file.name.replace(/\.[^.]+$/, "").slice(0, 24);
+        session.tracks.push(track);
+      }
+      const take = { id: S.uid(), name: `Take ${track.takes.length + 1}`, at: 0, duration: buffer.duration, best: false, transcript: "" };
+      audio.set(take.id, buffer);
+      saveAudio(take.id, buffer);
+      track.takes.push(take);
+      S.addTakeClip(track, take);
+      ui.selTrack = track.id;
+    });
+    if (ui.view.fit) fitView();
     status("Vocal imported.");
   } catch (err) {
     toast(`Couldn't read that file: ${err.message}`);
@@ -506,330 +861,776 @@ async function importVocal(file) {
 // ---------------------------------------------------------------- engine
 function buildChain() {
   $("chain").innerHTML = STAGES.map(([k, label]) => `<div class="node" data-stage="${k}"><i></i><span>${label}</span></div>`).join("");
-}
-function setStage(key, p) {
-  const idx = STAGES.findIndex(([k]) => k === key);
-  document.querySelectorAll(".node").forEach((n, i) => {
-    n.classList.toggle("done", i < idx || (i === idx && p >= 1));
-    n.classList.toggle("active", i === idx && p < 1);
-    n.style.setProperty("--p", i < idx ? 1 : i === idx ? Math.max(0.05, p) : 0);
-  });
-}
-function resetChain(done = false) {
   document.querySelectorAll(".node").forEach((n) => {
-    n.classList.toggle("done", done);
-    n.classList.remove("active");
-    n.style.setProperty("--p", done ? 1 : 0);
+    n.onclick = () => {
+      if (ui.busy) return;
+      const k = n.dataset.stage;
+      edit(`${S_().stages[k] ? "Disable" : "Enable"} ${k} stage`, () => (S_().stages[k] = !S_().stages[k]), { redraw: false });
+      paintChain();
+    };
+  });
+  paintChain();
+}
+function paintChain() {
+  document.querySelectorAll(".node").forEach((n) => {
+    const k = n.dataset.stage;
+    const st = ui.stageState[k] || {};
+    n.className = `node ${S_().stages[k] ? st.state || "" : "off"}`;
+    n.style.setProperty("--p", st.state === "done" || st.state === "skipped" ? 1 : st.p || 0);
+    n.title = S_().stages[k] ? `${k}: ${st.state || "ready"} · click to switch off` : `${k}: off · click to switch on`;
   });
 }
 
+function engineInputs() {
+  const tracks = [];
+  for (const t of session.tracks) {
+    if (!audible(t) || !t.clips.length) continue;
+    const r = S.renderTrack(t, audio, FS);
+    if (!r) continue;
+    const buffer = ctx.createBuffer(1, r.data.length, FS);
+    buffer.copyToChannel(r.data, 0);
+    tracks.push({ id: t.id, name: t.name, role: t.type, buffer, offset: r.offset, pan: t.pan, fx: t.fx, tune: t.tune, dbl: t.dbl, trimDb: t.volumeDb, revSend: t.revSend, dlySend: t.dlySend, mute: false });
+  }
+  const b = session.beat && audio.get(session.beat.id) ? { ...session.beat, buffer: audio.get(session.beat.id) } : null;
+  return { tracks, beat: b && !b.mute ? b : null };
+}
+
 async function automix() {
-  if (state.busy) return;
-  if (state.recording) await finishRecording();
-  if (!state.tracks.some((t) => !t.mute)) return toast("Record or import a vocal first.");
-  stopPlayback();
-  state.busy = true;
+  if (ui.busy) return;
+  if (ui.recording) await finishRecording();
+  const { tracks, beat } = engineInputs();
+  if (!tracks.length) return toast("Record or import a vocal first (and make sure it isn't muted).");
+  stopPlayback(false);
+  ui.busy = true;
+  ui.cancel = { cancelled: false };
   document.body.classList.add("busy");
-  resetChain();
+  $("btnCancel").hidden = false;
+  ui.stageState = Object.fromEntries(STAGES.map(([k]) => [k, { state: "queued", p: 0 }]));
+  paintChain();
   const t0 = performance.now();
+  let active = null;
   try {
-    if (state.beat && !state.settings.bpm) {
-      state.settings.bpm = estimateBpm(state.beat.buffer.getChannelData(0), FS);
-      $("bpm").value = state.settings.bpm;
+    if (beat && !S_().bpm) {
+      S_().bpm = estimateBpm(beat.buffer.getChannelData(0), FS);
+      $("bpm").value = S_().bpm;
     }
     const run = await runEngine({
-      tracks: state.tracks,
-      beat: state.beat,
-      fs: FS,
-      mode: state.mode,
-      settings: state.settings,
-      profile: state.profile,
-      onStage: (k, p, msg) => {
-        setStage(k, p);
+      tracks, beat, fs: FS, mode: session.mode, settings: { ...S_(), masterDb: session.master.volumeDb }, profile: ui.profile, signal: ui.cancel,
+      onStage: (k, p, msg, state) => {
+        active = k;
+        const idx = STAGES.findIndex(([x]) => x === k);
+        STAGES.forEach(([x], i) => {
+          if (i < idx && ui.stageState[x].state !== "skipped") ui.stageState[x] = { state: "done", p: 1 };
+        });
+        ui.stageState[k] = { state: state || (p >= 1 ? "done" : "active"), p };
+        paintChain();
         if (msg) status(msg);
       },
     });
-    state.run = run;
-    state.virtual = run.virtual;
-    state.master = run.mix.buffer;
-    state.masterNotes = run.mix.notes;
-    state.key = run.key;
-    state.profile = run.profile;
-    state.stale = false;
+    ui.run = run;
+    ui.master = run.mix.buffer;
+    ui.key = run.key;
+    ui.profile = run.profile;
+    ui.stale = false;
     store.set("profile", run.profile);
-    const s = state.settings;
-    store.set("taste", { balance: s.balance, space: s.space, targetLufs: s.targetLufs, tuneStyle: s.tuneStyle, alignTight: s.alignTight });
-    $("btnExportMix").disabled = false;
-    $("btnExportStems").disabled = false;
     $("roLufs").textContent = `${run.mix.lufs.toFixed(1)} LUFS`;
-    $("roPeak").textContent = `${run.mix.peak.toFixed(1)} dB`;
+    $("roPeak").textContent = `${(run.mix.truePeak ?? run.mix.peak).toFixed(1)} dBTP`;
     updateChips();
-    resetChain(true);
     setAB("B");
     renderReport();
     drawPitch();
     showTab("engine");
-    status(`Mixed in ${((performance.now() - t0) / 1000).toFixed(1)}s · ${run.mix.lufs.toFixed(1)} LUFS · peak ${run.mix.peak.toFixed(1)} dB · B to compare`);
+    status(`Mixed in ${((performance.now() - t0) / 1000).toFixed(1)}s · ${run.mix.lufs.toFixed(1)} LUFS · true peak ${(run.mix.truePeak ?? run.mix.peak).toFixed(1)} dBTP · B to compare`);
   } catch (err) {
     console.error(err);
-    toast(`Automix failed: ${err.message}`);
-    status("Automix failed.");
-    resetChain();
+    if (active) ui.stageState[active] = { state: "failed", p: 1 };
+    paintChain();
+    if (err.message === "Cancelled") status("Automix cancelled. Your takes are untouched.");
+    else {
+      status(`Automix failed at ${active || "start"}: ${err.message}. Click Automix to retry, or switch that stage off.`);
+      toast(`${active || "Engine"} failed: ${err.message}`);
+    }
   } finally {
-    state.busy = false;
+    ui.busy = false;
+    ui.cancel = null;
     document.body.classList.remove("busy");
+    $("btnCancel").hidden = true;
   }
 }
 
 // ---------------------------------------------------------------- export
 const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
-const safe = (s) => s.replace(/[^\w-]+/g, "_");
-function exportMaster() {
-  if (state.master) download(encodeWav(state.master), `MVBooth_${state.mode}_${stamp()}.wav`);
-}
-async function exportStems() {
-  if (!state.run) return;
-  const ids = [...state.run.mixInput.map((v) => v.track.id), ...(state.beat && !state.beat.mute ? ["beat"] : [])];
-  for (const [i, id] of ids.entries()) {
-    status(`Rendering stem ${i + 1}/${ids.length}…`);
-    const { buffer } = await renderStem(state.run, { beat: state.beat, fs: FS, mode: state.mode, settings: state.settings }, id);
-    const name = id === "beat" ? state.beat.name : state.run.mixInput.find((v) => v.track.id === id).track.name;
-    download(encodeWav(buffer), `MVBooth_stem_${String(i + 1).padStart(2, "0")}_${safe(name)}.wav`);
+async function exportAs(kind) {
+  $("exportMenu").hidden = true;
+  const rate = +S_().exportRate || 48000;
+  if (kind === "raw") {
+    const all = session.tracks.flatMap((t) => t.takes.map((k) => [t, k]));
+    if (!all.length) return toast("No takes yet.");
+    for (const [t, k] of all) download(encodeWav(await resample(audio.get(k.id), rate)), `MVBooth_raw_${safe(t.name)}_${safe(k.name)}.wav`);
+    return;
   }
-  status("Stems exported (pre-master: they sum to the mix before the limiter).");
+  if (!ui.master || ui.stale) return toast(ui.master ? "The mix is out of date. Run Automix first." : "Run Automix first, then export.");
+  const base = `MVBooth_${safe(session.name)}_${stamp()}`;
+  if (kind === "wav") download(encodeWav(await resample(ui.master, rate)), `${base}.wav`);
+  else if (kind === "mp3") {
+    status("Encoding MP3…");
+    const blob = await encodeMp3(await resample(ui.master, rate), { onProgress: (p) => status(`Encoding MP3… ${Math.round(p * 100)}%`) });
+    download(blob, `${base}.mp3`);
+    status("MP3 exported (320 kbps).");
+  } else if (kind === "stems") {
+    const ids = [...ui.run.mixInput.map((v) => v.track.id), ...(session.beat && !session.beat.mute ? ["beat"] : [])];
+    for (const [i, id] of ids.entries()) {
+      status(`Rendering stem ${i + 1}/${ids.length}…`);
+      const { buffer } = await renderStem(ui.run, { beat: engineInputs().beat, fs: FS, mode: session.mode, settings: S_() }, id);
+      const name = id === "beat" ? session.beat.name : ui.run.mixInput.find((v) => v.track.id === id).track.name;
+      download(encodeWav(await resample(buffer, rate)), `${base}_stem_${String(i + 1).padStart(2, "0")}_${safe(name)}.wav`);
+    }
+    status("Stems exported (pre-master: they sum to the mix before the limiter).");
+  }
 }
-function exportRaw() {
-  if (!state.tracks.length) return toast("No takes yet.");
-  for (const t of state.tracks) download(encodeWav(t.buffer), `MVBooth_raw_${safe(t.name)}.wav`);
+
+// ---------------------------------------------------------------- timeline view
+const HDR = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hdr")) || 248;
+const viewWidth = () => Math.max(100, $("timeline").clientWidth - HDR());
+const t2x = (t) => (t - ui.view.start) * ui.view.pps;
+const x2t = (x) => ui.view.start + x / ui.view.pps;
+function fitView() {
+  ui.view.pps = viewWidth() / Math.max(30, projectEnd() + 4);
+  ui.view.start = 0;
+  ui.view.fit = true;
+  renderLanesOnly();
+}
+function zoom(f, anchorT = currentPos()) {
+  const ax = t2x(anchorT);
+  ui.view.pps = clamp(ui.view.pps * f, 2, 2000);
+  ui.view.start = Math.max(0, anchorT - ax / ui.view.pps);
+  ui.view.fit = false;
+  renderLanesOnly();
+}
+function drawPlayhead(pos = currentPos()) {
+  $("clock").textContent = fmtTime(pos);
+  const bb = barBeat(Math.max(0, pos), bpm());
+  $("clockSub").textContent = bb ? `Bar ${bb.bar} · Beat ${bb.beat} · ${bpm()} BPM · 4/4` : "Set or tap a tempo for bars";
+  const x = t2x(pos);
+  const ph = $("playhead");
+  ph.style.display = x < 0 || x > viewWidth() ? "none" : "block";
+  ph.style.transform = `translateX(${x}px)`;
+}
+
+function peaks(id, buf) {
+  let p = peaksCache.get(id);
+  if (p) return p;
+  const d = buf.getChannelData(0);
+  const B = 256;
+  const n = Math.ceil(d.length / B);
+  const mn = new Float32Array(n), mx = new Float32Array(n);
+  let peak = 1e-4;
+  for (let i = 0; i < n; i++) {
+    let a = 0, b = 0;
+    for (let j = i * B; j < Math.min(d.length, (i + 1) * B); j++) {
+      if (d[j] < a) a = d[j];
+      if (d[j] > b) b = d[j];
+    }
+    mn[i] = a;
+    mx[i] = b;
+    peak = Math.max(peak, -a, b);
+  }
+  p = { mn, mx, B, peak };
+  peaksCache.set(id, p);
+  return p;
+}
+/** Draw `buf` (which starts at timeline time `bufAt`) between timeline times [s, e). */
+function drawWave(g, buf, id, bufAt, s, e, top, h, color, glow, norm = true) {
+  const P = peaks(id, buf);
+  const mid = top + h / 2;
+  const scale = (norm ? 1 / P.peak : 1) * (h / 2) * 0.9;
+  g.fillStyle = color;
+  g.shadowColor = glow;
+  g.shadowBlur = 6;
+  const x0 = Math.max(0, Math.floor(t2x(s)));
+  const x1 = Math.min(viewWidth(), Math.ceil(t2x(e)));
+  for (let x = x0; x < x1; x++) {
+    const ta = x2t(x) - bufAt, tb = x2t(x + 1) - bufAt;
+    const ia = Math.max(0, Math.floor((ta * buf.sampleRate) / P.B));
+    const ib = Math.min(P.mn.length, Math.ceil((tb * buf.sampleRate) / P.B));
+    let a = 0, b = 0;
+    for (let i = ia; i < ib; i++) {
+      if (P.mn[i] < a) a = P.mn[i];
+      if (P.mx[i] > b) b = P.mx[i];
+    }
+    if (ib > ia) g.fillRect(x, mid - b * scale, 1, Math.max(1, (b - a) * scale));
+  }
+  g.shadowBlur = 0;
+}
+
+function prepCanvas(canvas) {
+  const w = canvas.clientWidth, h = canvas.clientHeight, dpr = devicePixelRatio || 1;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  const g = canvas.getContext("2d");
+  g.scale(dpr, dpr);
+  return { g, w, h };
+}
+function drawGrid(g, w, h) {
+  const B = bpm();
+  const vs = ui.view.start, ve = x2t(w);
+  if (isLoop() || session.loop.end > session.loop.start) {
+    const lx0 = t2x(session.loop.start), lx1 = t2x(session.loop.end);
+    g.fillStyle = session.loop.on ? "rgba(255,179,92,0.06)" : "rgba(255,255,255,0.015)";
+    g.fillRect(lx0, 0, lx1 - lx0, h);
+  }
+  if (B) {
+    const beat = 60 / B;
+    const showBeats = ui.view.pps * beat > 14;
+    for (let b = Math.floor(vs / beat); b * beat < ve; b++) {
+      const bar = b % 4 === 0;
+      if (!bar && !showBeats) continue;
+      g.fillStyle = bar ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.025)";
+      g.fillRect(Math.round(t2x(b * beat)), 0, 1, h);
+    }
+  }
+  for (const m of session.markers) {
+    g.fillStyle = "rgba(255,122,26,0.35)";
+    g.fillRect(Math.round(t2x(m.t)), 0, 1, h);
+  }
+}
+
+function drawRuler() {
+  const c = $("ruler");
+  const { g, w, h } = prepCanvas(c);
+  g.font = "10px JetBrains Mono, monospace";
+  const B = bpm();
+  $("rulerHead").textContent = B ? "BARS" : "TIME";
+  if (session.loop.end > session.loop.start) {
+    const lx0 = t2x(session.loop.start), lx1 = t2x(session.loop.end);
+    g.fillStyle = session.loop.on ? "rgba(255,122,26,0.55)" : "rgba(255,255,255,0.12)";
+    g.fillRect(lx0, 0, lx1 - lx0, 5);
+  }
+  if (B) {
+    const bar = barSeconds(B);
+    const step = Math.max(1, Math.ceil(46 / (ui.view.pps * bar)));
+    for (let n = Math.floor(ui.view.start / bar); n * bar < x2t(w); n++) {
+      if (n % step) continue;
+      const x = Math.round(t2x(n * bar));
+      g.fillStyle = "rgba(255,255,255,0.18)";
+      g.fillRect(x, 10, 1, h - 10);
+      g.fillStyle = "#6b7684";
+      g.fillText(String(n + 1), x + 4, 21);
+    }
+  } else {
+    const steps = [1, 2, 5, 10, 15, 30, 60];
+    const step = steps.find((s) => s * ui.view.pps > 60) || 120;
+    for (let s = Math.floor(ui.view.start / step) * step; s < x2t(w); s += step) {
+      const x = Math.round(t2x(s));
+      g.fillStyle = "rgba(255,255,255,0.18)";
+      g.fillRect(x, 10, 1, h - 10);
+      g.fillStyle = "#6b7684";
+      g.fillText(fmtTime(s).replace(/\.0$/, ""), x + 4, 21);
+    }
+  }
+  for (const m of session.markers) {
+    const x = t2x(m.t);
+    g.fillStyle = "#ff7a1a";
+    g.beginPath();
+    g.moveTo(x, 6);
+    g.lineTo(x + 7, 6);
+    g.lineTo(x + 7, 14);
+    g.lineTo(x, 18);
+    g.fill();
+    g.fillStyle = "#ffb35c";
+    g.fillText(m.name, x + 10, 15);
+  }
 }
 
 // ---------------------------------------------------------------- lanes
 const DBL = { off: "DBL", stereo: "2X", oct: "2X+8" };
-function laneHead(item, kind) {
+function laneEl(cls, color) {
+  const lane = document.createElement("div");
+  lane.className = `lane ${cls}`;
+  if (color) lane.style.setProperty("--lane-color", color);
+  return lane;
+}
+function tog(label, cls, title, on, fn) {
+  const b = Object.assign(document.createElement("button"), { className: `tog ${cls}`, textContent: label, title });
+  b.classList.toggle("on", !!on);
+  b.onclick = (e) => {
+    e.stopPropagation();
+    fn();
+  };
+  return b;
+}
+function sel(opts, value, fn) {
+  const s = document.createElement("select");
+  for (const [k, v] of opts) s.add(new Option(v, k));
+  s.value = value;
+  s.onchange = () => fn(s.value);
+  s.onclick = (e) => e.stopPropagation();
+  return s;
+}
+function volRow(value, onInput, label) {
+  const row = document.createElement("div");
+  row.className = "vol";
+  const r = Object.assign(document.createElement("input"), { type: "range", min: -60, max: 6, step: 0.5, value });
+  const o = document.createElement("output");
+  const show = () => (o.textContent = +r.value <= -60 ? "−∞ dB" : `${(+r.value).toFixed(1)} dB`);
+  show();
+  r.oninput = () => {
+    onInput(+r.value);
+    show();
+  };
+  r.ondblclick = () => {
+    r.value = 0;
+    r.oninput();
+  };
+  r.title = `${label} (double-click resets)`;
+  row.append(r, o);
+  return row;
+}
+
+function trackHead(t) {
   const head = document.createElement("div");
   head.className = "lane-head";
   head.onclick = (e) => {
-    if (kind !== "vocal" || e.target.closest("button,select,input")) return;
-    state.selected = item.id;
-    renderLanes();
-    drawPitch();
+    if (e.target.closest("button,select,input")) return;
+    ui.selTrack = t.id;
+    renderAll();
   };
   const top = document.createElement("div");
   top.className = "top";
-  const name = Object.assign(document.createElement("input"), { className: "name", value: item.name, readOnly: kind === "virtual" });
-  name.onchange = () => {
-    item.name = name.value || item.name;
-    saveMeta();
+  const armB = Object.assign(document.createElement("button"), { className: `arm${t.armed ? " on" : ""}`, title: "Record-arm (only one track at a time)" });
+  armB.onclick = (e) => {
+    e.stopPropagation();
+    arm(t);
   };
-  top.append(name);
-  const btn = (label, cls, title, on, fn) => {
-    const b = Object.assign(document.createElement("button"), { className: `tog ${cls}`, textContent: label, title });
-    b.classList.toggle("on", !!on);
-    b.onclick = fn;
-    return b;
-  };
-  const changed = () => {
-    markStale();
-    saveMeta();
-    renderLanes();
-    if (state.playing && !state.recording) startPlayback(currentPos());
-  };
-  if (kind !== "virtual") {
-    top.append(btn("✕", "x", "Delete", false, () => {
-      if (!confirm(`Delete "${item.name}"? This can't be undone.`)) return;
+  const name = Object.assign(document.createElement("input"), { className: "name", value: t.name });
+  name.onchange = () => edit("Rename track", () => (t.name = name.value || t.name), { audioChange: false });
+  top.append(
+    armB,
+    name,
+    tog("✕", "x", "Delete track", false, () => {
+      if (!confirm(`Delete track "${t.name}"? (Undo with Ctrl+Z)`)) return;
       stopPlayback();
-      store.del(`audio:${item.id}`);
-      if (kind === "beat") state.beat = null;
-      else state.tracks = state.tracks.filter((t) => t !== item);
-      changed();
-    }));
+      edit("Delete track", () => (session.tracks = session.tracks.filter((x) => x !== t)));
+    }),
+  );
+  const r1 = document.createElement("div");
+  r1.className = "row";
+  r1.append(
+    sel(Object.entries(ROLES).filter(([, r]) => !r.hidden).map(([k, r]) => [k, r.label]), t.type, (v) => edit("Track type", () => (t.type = v))),
+    sel(Object.entries(FX), t.fx || "clean", (v) => edit("Track FX", () => (t.fx = v))),
+  );
+  const r2 = document.createElement("div");
+  r2.className = "row";
+  r2.append(tog("TUNE", "t", "Pitch correction on this track", t.tune !== false, () => edit("Toggle tune", () => (t.tune = t.tune === false))));
+  if (t.type === "lead") {
+    r2.append(tog(DBL[t.dbl || "off"], "d", "AI doubles: off → stereo pair → stereo + octave", t.dbl && t.dbl !== "off", () => edit("AI doubles", () => (t.dbl = { off: "stereo", stereo: "oct", oct: "off" }[t.dbl || "off"]))));
   }
-  head.append(top);
-  if (kind === "beat") {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.append(Object.assign(document.createElement("span"), { className: "badge", textContent: `Beat · ${state.settings.bpm || "?"} BPM` }));
-    row.append(btn("M", "m", "Mute", item.mute, () => {
-      item.mute = !item.mute;
-      changed();
-    }));
-    head.append(row);
-  } else if (kind === "virtual") {
-    head.append(Object.assign(document.createElement("span"), { className: "badge", textContent: "AI generated · in the mix" }));
-  } else {
-    const sel = (opts, value, fn) => {
-      const s = document.createElement("select");
-      for (const [k, v] of opts) s.add(new Option(v, k));
-      s.value = value;
-      s.onchange = () => fn(s.value);
-      return s;
-    };
-    const r1 = document.createElement("div");
-    r1.className = "row";
-    r1.append(
-      sel(Object.entries(ROLES).filter(([, r]) => !r.hidden).map(([k, r]) => [k, r.label]), item.role, (v) => {
-        item.role = v;
-        changed();
-      }),
-      sel(Object.entries(FX), item.fx || "clean", (v) => {
-        item.fx = v;
-        changed();
-      }),
-    );
-    const r2 = document.createElement("div");
-    r2.className = "row";
-    r2.append(
-      btn("TUNE", "t", "Pitch correction on this lane", item.tune !== false, () => {
-        item.tune = item.tune === false;
-        changed();
-      }),
-    );
-    if (item.role === "lead") {
-      r2.append(btn(DBL[item.dbl || "off"], "d", "AI doubles: off → stereo pair → stereo + octave", item.dbl && item.dbl !== "off", () => {
-        item.dbl = { off: "stereo", stereo: "oct", oct: "off" }[item.dbl || "off"];
-        changed();
-      }));
-    }
-    r2.append(
-      btn("M", "m", "Mute", item.mute, () => {
-        item.mute = !item.mute;
-        changed();
-      }),
-      btn("S", "s", "Solo", item.solo, () => {
-        item.solo = !item.solo;
-        changed();
-      }),
-    );
-    head.append(r1, r2);
-  }
+  r2.append(
+    tog("M", "m", "Mute", t.mute, () => edit("Mute", () => (t.mute = !t.mute), { redraw: true }) || applyMixer()),
+    tog("S", "s", "Solo", t.solo, () => edit("Solo", () => (t.solo = !t.solo)) || applyMixer()),
+    tog(`${t.takes.length} ${t.showTakes ? "▴" : "▾"}`, "", "Show take lanes (comping)", t.showTakes, () => edit("Show takes", () => (t.showTakes = !t.showTakes), { audioChange: false })),
+  );
+  head.append(top, r1, r2, volRow(t.volumeDb, (v) => {
+    history.push(session, `${t.name} volume`, `vol:${t.id}`);
+    t.volumeDb = v;
+    markStale();
+    save();
+    applyMixer();
+    updateUndo();
+  }, "Track volume"));
+  return head;
+}
+
+function takeHead(t, k) {
+  const head = document.createElement("div");
+  head.className = "lane-head";
+  const used = t.clips.some((c) => c.takeId === k.id);
+  const name = Object.assign(document.createElement("span"), { className: `tname${used ? " used" : ""}`, textContent: `${k.name} · ${k.duration.toFixed(1)}s`, title: k.transcript || k.name });
+  head.append(
+    tog("★", "star", "Mark as best take", k.best, () => edit("Best take", () => (k.best = !k.best), { audioChange: false })),
+    name,
+    tog("Use", "", "Use this whole take on the track", false, () => edit(`Use ${k.name}`, () => S.useWholeTake(t, k))),
+    tog("Comp", "", "Swap this take into the selected clip (comping)", false, () => {
+      const c = t.clips.find((x) => x.id === ui.selClip) || S.clipAt(t, ui.playhead);
+      if (!c) return toast("Select a clip on this track (or put the playhead over one) first.");
+      edit(`Comp ${k.name}`, () => {
+        c.takeId = k.id;
+        c.shift = 0;
+      });
+    }),
+    tog("✕", "x", "Delete take", false, () => {
+      if (!confirm(`Delete ${k.name}? (Undo with Ctrl+Z)`)) return;
+      edit("Delete take", () => {
+        t.takes = t.takes.filter((x) => x !== k);
+        t.clips = t.clips.filter((c) => c.takeId !== k.id);
+      });
+    }),
+  );
+  return head;
+}
+
+function beatHead(b) {
+  const head = document.createElement("div");
+  head.className = "lane-head";
+  const top = document.createElement("div");
+  top.className = "top";
+  const name = Object.assign(document.createElement("input"), { className: "name", value: b.name });
+  name.onchange = () => edit("Rename beat", () => (b.name = name.value || b.name), { audioChange: false });
+  top.append(name, tog("✕", "x", "Remove beat", false, () => {
+    if (!confirm(`Remove the beat "${b.name}"? (Undo with Ctrl+Z)`)) return;
+    stopPlayback();
+    edit("Remove beat", () => (session.beat = null));
+  }));
+  const row = document.createElement("div");
+  row.className = "row";
+  row.append(
+    Object.assign(document.createElement("span"), { className: "badge", textContent: `Beat · ${bpm() || "?"} BPM` }),
+    tog("M", "m", "Mute", b.mute, () => edit("Mute beat", () => (b.mute = !b.mute)) || applyMixer()),
+  );
+  head.append(top, row, volRow(b.volumeDb || 0, (v) => {
+    history.push(session, "Beat volume", "vol:beat");
+    b.volumeDb = v;
+    markStale();
+    save();
+    applyMixer();
+    updateUndo();
+  }, "Beat volume"));
   return head;
 }
 
 function renderLanes() {
   const lanes = $("lanes");
   lanes.innerHTML = "";
-  const items = [];
-  if (state.beat) items.push([state.beat, "beat"]);
-  for (const t of state.tracks) {
-    items.push([t, "vocal"]);
-    if (state.ab === "B" && !state.stale) for (const v of state.virtual.filter((v) => v.parent === t.id)) items.push([v, "virtual"]);
-  }
-  for (const [item, kind] of items) {
-    const lane = document.createElement("div");
-    lane.className = `lane${kind === "beat" ? " beat" : ""}${kind === "virtual" ? " virtual" : ""}${item.id === state.selected ? " sel" : ""}`;
-    const canvas = document.createElement("canvas");
-    canvas._item = item;
-    canvas._kind = kind;
-    canvas.onpointerdown = (e) => seekFromEvent(e, canvas);
-    lane.append(laneHead(item, kind), canvas);
+  const proc = ui.ab === "B" && !ui.stale ? ui.run?.processed : null;
+  if (session.beat) {
+    const lane = laneEl("beat", "#ff7a1a");
+    const c = document.createElement("canvas");
+    c._draw = (g, w, h) => {
+      drawGrid(g, w, h);
+      const buf = audio.get(session.beat.id);
+      if (buf) drawWave(g, buf, session.beat.id, session.beat.offset || 0, session.beat.offset || 0, (session.beat.offset || 0) + buf.duration, 8, h - 16, "rgba(255,150,70,0.8)", "#ff7a1a");
+    };
+    c.onpointerdown = (e) => laneSeek(e, c);
+    lane.append(beatHead(session.beat), c);
     lanes.append(lane);
   }
-  $("emptyHint").hidden = items.length > 0;
-  renderRuler();
-  drawLanes();
-  placePlayhead(currentPos());
-}
-function seekFromEvent(e, el) {
-  if (state.recording) return;
-  const r = el.getBoundingClientRect();
-  const t = ((e.clientX - r.left) / r.width) * viewDuration();
-  const wasPlaying = !!state.playing;
-  stopPlayback();
-  state.playhead = Math.max(0, t);
-  $("clock").textContent = fmtTime(state.playhead);
-  placePlayhead(state.playhead);
-  if (wasPlaying) startPlayback(state.playhead);
-}
-function renderRuler() {
-  const ruler = $("ruler");
-  ruler.innerHTML = "";
-  const dur = viewDuration();
-  const step = dur > 240 ? 30 : dur > 90 ? 10 : 5;
-  for (let s = 0; s < dur; s += step) {
-    const span = document.createElement("span");
-    span.style.left = `${(s / dur) * 100}%`;
-    span.textContent = fmtTime(s).replace(/\.0$/, "");
-    ruler.append(span);
-  }
-}
-function placePlayhead(pos) {
-  $("playhead").style.transform = `translateX(${(pos / viewDuration()) * $("ruler").clientWidth}px)`;
-}
-function drawLanes() {
-  const dur = viewDuration();
-  const dpr = window.devicePixelRatio || 1;
-  const processed = state.run?.processed;
-  for (const canvas of document.querySelectorAll(".lane canvas")) {
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (!w) continue;
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
-    const g = canvas.getContext("2d");
-    g.scale(dpr, dpr);
-    const item = canvas._item;
-    const kind = canvas._kind;
-    // Bar grid when the tempo is known.
-    if (state.settings.bpm) {
-      const bar = (60 / state.settings.bpm) * 4;
-      g.fillStyle = "rgba(255,255,255,0.035)";
-      for (let t = 0; t < dur; t += bar) g.fillRect((t / dur) * w, 0, 1, h);
-    }
-    const proc = kind !== "beat" && state.ab === "B" && !state.stale ? processed?.get(item.id) : null;
-    const buf = proc ? proc.buffer : item.buffer;
-    if (!buf) continue;
-    const data = buf.getChannelData(0);
-    const off = item.offset || 0;
-    const x0 = (off / dur) * w;
-    const x1 = ((off + buf.duration) / dur) * w;
-    const spp = data.length / Math.max(1, x1 - x0);
-    const mid = h / 2;
-    let peak = 1e-3;
-    for (let i = 0; i < data.length; i += 16) peak = Math.max(peak, Math.abs(data[i]));
-    const grad = g.createLinearGradient(0, 0, 0, h);
-    if (kind === "beat") {
-      grad.addColorStop(0, "rgba(255,179,92,0.85)");
-      grad.addColorStop(0.5, "rgba(255,122,26,0.55)");
-      grad.addColorStop(1, "rgba(255,179,92,0.85)");
-    } else {
-      const a = proc ? 1 : 0.55;
-      grad.addColorStop(0, `rgba(160,255,248,${a})`);
-      grad.addColorStop(0.5, `rgba(18,224,208,${a * 0.75})`);
-      grad.addColorStop(1, `rgba(160,255,248,${a})`);
-    }
-    g.fillStyle = grad;
-    g.shadowColor = kind === "beat" ? "#ff7a1a" : "#12e0d0";
-    g.shadowBlur = proc ? 10 : 4;
-    for (let x = Math.max(0, Math.floor(x0)); x < Math.min(w, x1); x++) {
-      const a = Math.floor((x - x0) * spp);
-      const b = Math.min(data.length, Math.floor((x - x0 + 1) * spp));
-      let mn = 0, mx = 0;
-      for (let i = a; i < b; i += Math.max(1, Math.floor((b - a) / 48))) {
-        const v = data[i] / peak;
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
+  for (const t of session.tracks) {
+    const lane = laneEl(`vocal${t.id === ui.selTrack ? " sel" : ""}`, t.color);
+    const c = document.createElement("canvas");
+    c._track = t;
+    c._draw = (g, w, h) => drawTrack(g, w, h, t, proc?.get(t.id));
+    c.onpointerdown = (e) => clipPointer(e, c, t);
+    c.onpointermove = (e) => (c.style.cursor = hitClip(e, c, t)?.mode === "move" ? "grab" : hitClip(e, c, t) ? "ew-resize" : "text");
+    lane.append(trackHead(t), c);
+    lanes.append(lane);
+    if (proc) {
+      for (const v of ui.run.virtual.filter((v) => v.parent === t.id)) {
+        const vl = laneEl("take", "#7f8ea0");
+        const vh = document.createElement("div");
+        vh.className = "lane-head";
+        vh.append(Object.assign(document.createElement("span"), { className: "tname used", textContent: `${v.name} · AI` }));
+        const vc = document.createElement("canvas");
+        vc._draw = (g, w, h) => {
+          drawGrid(g, w, h);
+          const pr = proc.get(v.id);
+          if (pr) drawWave(g, pr.buffer, `p:${v.id}:${ui.run.mix.lufs}`, v.offset, v.offset, v.offset + pr.buffer.duration, 4, h - 8, "rgba(150,170,190,0.7)", "transparent");
+        };
+        vc.onpointerdown = (e) => laneSeek(e, vc);
+        vl.append(vh, vc);
+        lanes.append(vl);
       }
-      g.fillRect(x, mid - mx * mid * 0.86, 1, Math.max(1, (mx - mn) * mid * 0.86));
     }
-    g.shadowBlur = 0;
-    if (proc && kind === "vocal") {
-      // Visible automation: the vocal rider's gain line + de-ess hits.
-      const fpx = (proc.hop / FS / dur) * w;
-      g.strokeStyle = "#ffb35c";
-      g.lineWidth = 1.4;
-      g.beginPath();
-      proc.rideCurve.forEach((db, i) => {
-        const x = x0 + i * fpx;
-        const y = mid - (Math.max(-20, Math.min(12, db)) / 20) * mid * 0.85;
-        if (i === 0) g.moveTo(x, y);
-        else g.lineTo(x, y);
-      });
-      g.stroke();
-      g.fillStyle = "rgba(255,59,74,0.75)";
-      proc.deess.forEach((db, i) => {
-        if (db < -1.5) g.fillRect(x0 + i * fpx, h - 4, Math.max(1, fpx), 4);
-      });
+    if (t.showTakes) {
+      for (const k of t.takes) {
+        const tl = laneEl("take", t.color);
+        const tc = document.createElement("canvas");
+        tc._draw = (g, w, h) => {
+          drawGrid(g, w, h);
+          const buf = audio.get(k.id);
+          if (!buf) return;
+          drawWave(g, buf, k.id, k.at, k.at, k.at + k.duration, 4, h - 8, "rgba(160,255,248,0.32)", "transparent");
+          for (const cl of t.clips.filter((x) => x.takeId === k.id)) {
+            g.save();
+            g.beginPath();
+            g.rect(t2x(cl.start), 0, t2x(cl.end) - t2x(cl.start), h);
+            g.clip();
+            drawWave(g, buf, k.id, k.at + (cl.shift || 0), cl.start, cl.end, 4, h - 8, "rgba(160,255,248,0.9)", "#12e0d0");
+            g.restore();
+          }
+        };
+        tc.onpointerdown = (e) => laneSeek(e, tc);
+        tl.append(takeHead(t, k), tc);
+        lanes.append(tl);
+      }
     }
   }
+  $("emptyHint").hidden = !!(session.beat || session.tracks.length);
+  renderLanesOnly();
+}
+function renderLanesOnly() {
+  drawRuler();
+  for (const c of document.querySelectorAll(".lane canvas")) {
+    const { g, w, h } = prepCanvas(c);
+    c._draw?.(g, w, h);
+  }
+  drawPlayhead();
+}
+
+function drawTrack(g, w, h, t, proc) {
+  drawGrid(g, w, h);
+  if (proc) {
+    drawWave(g, proc.buffer, `p:${t.id}:${ui.run.mix.lufs}`, proc.offset ?? engineOffset(t), engineOffset(t), engineOffset(t) + proc.buffer.duration, 6, h - 12, "rgba(160,255,248,0.95)", "#12e0d0");
+    const fpx = (proc.hop / FS) * ui.view.pps;
+    const x0 = t2x(engineOffset(t));
+    g.strokeStyle = "#ffb35c";
+    g.lineWidth = 1.4;
+    g.beginPath();
+    proc.rideCurve.forEach((db, i) => {
+      const x = x0 + i * fpx;
+      if (x < -2 || x > w + 2) return;
+      const y = h / 2 - (clamp(db, -20, 12) / 20) * (h / 2) * 0.85;
+      g.lineTo(x, y);
+    });
+    g.stroke();
+    g.fillStyle = "rgba(255,59,74,0.75)";
+    proc.deess.forEach((db, i) => {
+      if (db < -1.5) g.fillRect(x0 + i * fpx, h - 4, Math.max(1, fpx), 4);
+    });
+    return;
+  }
+  for (const c of t.clips) {
+    const take = takeOf(t, c.takeId);
+    const buf = audio.get(c.takeId);
+    const x0 = t2x(c.start), x1 = t2x(c.end);
+    if (x1 < 0 || x0 > w) continue;
+    const selc = c.id === ui.selClip;
+    g.fillStyle = selc ? "rgba(255,122,26,0.12)" : "rgba(18,224,208,0.06)";
+    g.fillRect(x0, 3, x1 - x0, h - 6);
+    g.strokeStyle = selc ? "rgba(255,179,92,0.9)" : "rgba(18,224,208,0.28)";
+    g.lineWidth = 1;
+    g.strokeRect(x0 + 0.5, 3.5, x1 - x0 - 1, h - 7);
+    if (buf && take) {
+      g.save();
+      g.beginPath();
+      g.rect(x0, 0, x1 - x0, h);
+      g.clip();
+      const gainScale = dbToLin(c.gainDb || 0);
+      g.translate(0, (h / 2) * (1 - gainScale));
+      g.scale(1, gainScale);
+      drawWave(g, buf, c.takeId, take.at + (c.shift || 0), c.start, c.end, 12, h - 24, "rgba(160,255,248,0.8)", t.color);
+      g.restore();
+      g.fillStyle = "rgba(255,255,255,0.55)";
+      g.font = "9px JetBrains Mono, monospace";
+      g.fillText(`${take.name}${c.gainDb ? ` ${c.gainDb > 0 ? "+" : ""}${c.gainDb}dB` : ""}`, Math.max(x0, 0) + 5, 13);
+    }
+    // Fade ramps
+    g.strokeStyle = "rgba(255,179,92,0.8)";
+    g.beginPath();
+    g.moveTo(x0, h - 4);
+    g.lineTo(t2x(c.start + (c.fadeIn || 0)), 4);
+    g.moveTo(t2x(c.end - (c.fadeOut || 0)), 4);
+    g.lineTo(x1, h - 4);
+    g.stroke();
+  }
+}
+const engineOffset = (t) => S.trackStart(t);
+
+// ---------------------------------------------------------------- pointer editing
+function laneSeek(e, el) {
+  const r = el.getBoundingClientRect();
+  ui.selClip = null;
+  seek(x2t(e.clientX - r.left));
+  updateClipInsp();
+}
+function hitClip(e, canvas, t) {
+  if (ui.ab === "B" && ui.run && !ui.stale) return null;
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  for (const c of t.clips) {
+    const x0 = t2x(c.start), x1 = t2x(c.end);
+    if (x < x0 - 2 || x > x1 + 2) continue;
+    if (y < 14 && Math.abs(x - t2x(c.start + (c.fadeIn || 0))) < 8) return { c, mode: "fadeIn" };
+    if (y < 14 && Math.abs(x - t2x(c.end - (c.fadeOut || 0))) < 8) return { c, mode: "fadeOut" };
+    if (Math.abs(x - x0) < 6) return { c, mode: "trimL" };
+    if (Math.abs(x - x1) < 6) return { c, mode: "trimR" };
+    if (x > x0 && x < x1) return { c, mode: "move" };
+  }
+  return null;
+}
+function clipPointer(e, canvas, t) {
+  const hit = hitClip(e, canvas, t);
+  ui.selTrack = t.id;
+  if (!hit) {
+    laneSeek(e, canvas);
+    document.querySelectorAll(".lane.vocal").forEach((l) => l.classList.toggle("sel", l.contains(canvas)));
+    return;
+  }
+  const r = canvas.getBoundingClientRect();
+  const startX = e.clientX;
+  const orig = { ...hit.c };
+  const take = takeOf(t, hit.c.takeId);
+  let moved = false;
+  ui.selClip = hit.c.id;
+  canvas.setPointerCapture(e.pointerId);
+  const snap = (v, ev) => (S_().snap && !ev.altKey && bpm() ? snapTime(v, bpm(), 4) : v);
+  canvas.onpointermove = (ev) => {
+    const dt = (ev.clientX - startX) / ui.view.pps;
+    if (!moved && Math.abs(ev.clientX - startX) < 3) return;
+    if (!moved) history.push(session, { move: "Move clip", trimL: "Trim clip", trimR: "Trim clip", fadeIn: "Fade in", fadeOut: "Fade out" }[hit.mode]);
+    moved = true;
+    const c = hit.c;
+    const minLen = 0.05;
+    if (hit.mode === "move") {
+      const ns = Math.max(0, snap(orig.start + dt, ev));
+      const d = ns - orig.start;
+      c.start = orig.start + d;
+      c.end = orig.end + d;
+      c.shift = (orig.shift || 0) + d;
+    } else if (hit.mode === "trimL") {
+      const lo = take.at + (orig.shift || 0);
+      c.start = clamp(snap(orig.start + dt, ev), Math.max(0, lo), orig.end - minLen);
+    } else if (hit.mode === "trimR") {
+      const hi = take.at + (orig.shift || 0) + take.duration;
+      c.end = clamp(snap(orig.end + dt, ev), orig.start + minLen, hi);
+    } else if (hit.mode === "fadeIn") {
+      c.fadeIn = clamp((orig.fadeIn || 0) + dt, 0, (c.end - c.start) / 2);
+    } else if (hit.mode === "fadeOut") {
+      c.fadeOut = clamp((orig.fadeOut || 0) - dt, 0, (c.end - c.start) / 2);
+    }
+    const { g, w, h } = prepCanvas(canvas);
+    drawTrack(g, w, h, t, null);
+  };
+  canvas.onpointerup = () => {
+    canvas.onpointermove = (ev) => (canvas.style.cursor = hitClip(ev, canvas, t)?.mode === "move" ? "grab" : hitClip(ev, canvas, t) ? "ew-resize" : "text");
+    canvas.onpointerup = null;
+    if (moved) {
+      if (hit.mode === "move") {
+        // Overlap rule: the moved clip wins.
+        const c = hit.c;
+        t.clips = t.clips.filter((x) => x !== c);
+        S.carve(t, c.start, c.end);
+        t.clips.push(c);
+        t.clips.sort((a, b) => a.start - b.start);
+      }
+      markStale();
+      save();
+      updateUndo();
+    } else {
+      seek(x2t(startX - r.left));
+    }
+    renderAll();
+  };
+}
+function updateClipInsp() {
+  const t = trackById(ui.selTrack);
+  const c = t?.clips.find((x) => x.id === ui.selClip);
+  $("clipInsp").hidden = !c;
+  if (!c) return;
+  $("clipGain").value = c.gainDb || 0;
+  $("clipGainOut").textContent = `${(c.gainDb || 0).toFixed(1)} dB`;
+  $("clipFadeIn").value = Math.round((c.fadeIn || 0) * 1000);
+  $("clipFadeOut").value = Math.round((c.fadeOut || 0) * 1000);
+}
+function splitAtPlayhead() {
+  const t = trackById(ui.selTrack);
+  if (!t) return toast("Select a track first.");
+  const c = S.clipAt(t, currentPos());
+  if (!c) return toast("Put the playhead over a clip on the selected track.");
+  edit("Split clip", () => {
+    const right = S.splitClip(t, c.id, currentPos());
+    ui.selClip = right?.id || null;
+  });
+}
+function deleteClip() {
+  const t = trackById(ui.selTrack);
+  if (!t || !ui.selClip) return toast("Click a clip to select it first.");
+  edit("Delete clip", () => {
+    t.clips = t.clips.filter((c) => c.id !== ui.selClip);
+    ui.selClip = null;
+  });
+}
+
+// ---------------------------------------------------------------- mixer tab
+function renderStrips() {
+  const el = $("strips");
+  el.innerHTML = "";
+  const strip = (id, name, color, vol, pan, onVol, onPan, extra) => {
+    const s = document.createElement("div");
+    s.className = `strip${id === "master" ? " master" : ""}`;
+    s.dataset.id = id;
+    s.style.borderTopColor = color;
+    const n = Object.assign(document.createElement("div"), { className: "sname", textContent: name, title: name });
+    const fr = document.createElement("div");
+    fr.className = "fader-row";
+    const f = Object.assign(document.createElement("input"), { type: "range", className: "fader", min: -60, max: 6, step: 0.5, value: vol });
+    const m = document.createElement("div");
+    m.className = "smeter";
+    m.append(document.createElement("b"));
+    fr.append(f, m);
+    const o = document.createElement("output");
+    const show = () => (o.textContent = +f.value <= -60 ? "−∞" : `${(+f.value).toFixed(1)}`);
+    show();
+    f.oninput = () => {
+      onVol(+f.value);
+      show();
+    };
+    f.ondblclick = () => {
+      f.value = 0;
+      f.oninput();
+    };
+    s.append(n, fr, o);
+    if (onPan) {
+      const pl = document.createElement("label");
+      pl.textContent = "Pan";
+      const p = Object.assign(document.createElement("input"), { type: "range", min: -1, max: 1, step: 0.05, value: pan });
+      p.oninput = () => onPan(+p.value);
+      p.ondblclick = () => {
+        p.value = 0;
+        p.oninput();
+      };
+      pl.append(p);
+      s.append(pl);
+    }
+    extra?.(s);
+    el.append(s);
+  };
+  const coalesce = (label, key, fn) => {
+    history.push(session, label, key);
+    fn();
+    markStale();
+    save();
+    applyMixer();
+    updateUndo();
+  };
+  for (const t of session.tracks) {
+    strip(t.id, t.name, t.color, t.volumeDb, t.pan || 0,
+      (v) => coalesce(`${t.name} volume`, `vol:${t.id}`, () => (t.volumeDb = v)),
+      (v) => coalesce(`${t.name} pan`, `pan:${t.id}`, () => (t.pan = v)),
+      (s) => {
+        for (const [k, label] of [["revSend", "Verb"], ["dlySend", "Delay"]]) {
+          const l = document.createElement("label");
+          l.textContent = label;
+          const r = Object.assign(document.createElement("input"), { type: "range", min: 0, max: 2, step: 0.05, value: t[k] ?? 1 });
+          r.oninput = () => coalesce(`${t.name} ${label} send`, `${k}:${t.id}`, () => (t[k] = +r.value));
+          l.append(r);
+          s.append(l);
+        }
+        const row = document.createElement("div");
+        row.className = "row";
+        row.append(
+          tog("M", "m", "Mute", t.mute, () => edit("Mute", () => (t.mute = !t.mute)) || applyMixer()),
+          tog("S", "s", "Solo", t.solo, () => edit("Solo", () => (t.solo = !t.solo)) || applyMixer()),
+        );
+        s.append(row);
+      });
+  }
+  if (session.beat) {
+    const b = session.beat;
+    strip("beat", b.name, "#ff7a1a", b.volumeDb || 0, 0, (v) => coalesce("Beat volume", "vol:beat", () => (b.volumeDb = v)), null);
+  }
+  strip("master", "Master", "#ff7a1a", session.master.volumeDb || 0, 0, (v) => coalesce("Master volume", "vol:master", () => (session.master.volumeDb = v)), null, (s) => {
+    s.append(Object.assign(document.createElement("label"), { textContent: "Limiter −1 dB", title: "Live safety limiter; exports are mastered to the loudness target with a true-peak limiter" }));
+  });
 }
 
 // ---------------------------------------------------------------- pitch view
@@ -837,18 +1638,14 @@ function drawPitch() {
   const c = $("pitchGraph");
   const w = c.clientWidth, h = c.clientHeight;
   if (!w) return;
-  const dpr = devicePixelRatio || 1;
-  c.width = Math.round(w * dpr);
-  c.height = Math.round(h * dpr);
-  const g = c.getContext("2d");
-  g.scale(dpr, dpr);
-  const t = state.tracks.find((x) => x.id === state.selected);
-  $("pitchLane").textContent = t ? t.name : "select a lane";
-  const proc = t && state.run?.processed.get(t.id);
+  const { g } = prepCanvas(c);
+  const t = trackById(ui.selTrack);
+  $("pitchLane").textContent = t ? t.name : "select a track";
+  const proc = t && ui.run?.processed.get(t.id);
   if (!proc?.pitch) {
     g.fillStyle = "#4b5560";
     g.font = "12px Space Grotesk";
-    g.fillText(t ? "Run Automix to see the pitch analysis." : "Click a vocal lane header.", 14, 24);
+    g.fillText(t ? "Run Automix to see the pitch analysis." : "Click a track header.", 14, 24);
     return;
   }
   const { f0, f0Out } = proc.pitch;
@@ -861,7 +1658,7 @@ function drawPitch() {
   if (!Number.isFinite(lo)) return;
   lo = Math.floor(lo) - 2;
   hi = Math.ceil(hi) + 2;
-  const key = state.key;
+  const key = ui.key;
   const allowed = key ? new Set(SCALES[key.scale].steps.map((s) => (s + key.tonic) % 12)) : null;
   const y = (m) => h - ((m - lo) / (hi - lo)) * h;
   g.font = "9px JetBrains Mono";
@@ -875,28 +1672,23 @@ function drawPitch() {
       g.fillText(`${NOTE_NAMES[pc]}${Math.floor(m / 12) - 1}`, 4, y(m) + 3);
     }
   }
-  // Zoomed window (8 s) that follows the playhead, like a pitch editor.
   const hopSec = proc.hop / FS;
   const span = Math.min(f0.length, Math.round(8 / hopSec));
-  const rel = Math.round((currentPos() - (t.offset || 0) - 2) / hopSec);
+  const rel = Math.round((currentPos() - engineOffset(t) - 2) / hopSec);
   const first = Math.max(0, Math.min(f0.length - span, rel));
-  const n = span;
-  const px = (i) => 28 + ((i - first) / n) * (w - 32);
-  g.fillStyle = "rgba(255,255,255,0.3)";
-  g.fillText(`${fmtTime(first * hopSec + (t.offset || 0))} – ${fmtTime((first + span) * hopSec + (t.offset || 0))}`, w - 110, 12);
+  const px = (i) => 28 + ((i - first) / span) * (w - 32);
   const plot = (arr, color, width) => {
     g.strokeStyle = color;
     g.lineWidth = width;
     g.beginPath();
     let pen = false;
-    for (let i = first; i < first + n; i++) {
+    for (let i = first; i < first + span; i++) {
       if (!arr[i]) {
         pen = false;
         continue;
       }
-      const x = px(i);
-      if (!pen) g.moveTo(x, y(midi(arr[i])));
-      else g.lineTo(x, y(midi(arr[i])));
+      if (!pen) g.moveTo(px(i), y(midi(arr[i])));
+      else g.lineTo(px(i), y(midi(arr[i])));
       pen = true;
     }
     g.stroke();
@@ -911,25 +1703,21 @@ function drawPitch() {
 // ---------------------------------------------------------------- report
 function renderReport() {
   const el = $("report");
-  if (!state.run) return;
+  if (!ui.run) return;
   const list = (arr) => `<ul>${arr.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>`;
-  let html = state.stale ? '<p class="stale">Takes or settings changed since this mix. Run Automix again.</p>' : "";
-  html += `<section class="master"><h4>Mix bus · ${MODES[state.mode].label}${state.key ? ` · ${esc(keyLabel(state.key))}` : ""}</h4>${list(state.masterNotes)}</section>`;
-  for (const v of state.run.mixInput) {
-    const r = v.processed;
-    html += `<section><h4>${esc(v.track.name)} · ${esc((ROLES[v.track.role] || ROLES.lead).label)}</h4>${list(r.report)}`;
-    if (v.track.transcript) html += `<div class="transcript">“${esc(v.track.transcript)}”</div>`;
-    html += "</section>";
+  let html = ui.stale ? '<p class="stale">Takes or settings changed since this mix. Run Automix again.</p>' : "";
+  html += `<section class="master"><h4>Mix bus · ${MODES[session.mode].label}${ui.key ? ` · ${esc(keyLabel(ui.key))}` : ""}</h4>${list(ui.run.mix.notes)}</section>`;
+  for (const v of ui.run.mixInput) {
+    html += `<section><h4>${esc(v.track.name)} · ${esc((ROLES[v.track.role] || ROLES.lead).label)}</h4>${list(v.processed.report)}</section>`;
   }
-  const p = state.profile;
+  const p = ui.profile;
   if (p) {
     const voice = p.f0 ? `${Math.round(p.f0)} Hz average pitch (${p.f0 < 155 ? "low/baritone" : p.f0 < 240 ? "mid/tenor" : "high"} range)` : "still learning";
     html += `<section class="learn"><h4>What the engine has learned</h4>${list([
       `Sessions analysed: ${p.sessions}`,
       `Your voice: ${voice}`,
       p.sibCentre ? `Your sibilance sits at ${(p.sibCentre / 1000).toFixed(1)} kHz; short takes borrow this profile for EQ` : "Sibilance profile: learning",
-      p.key ? `Last confident key: ${keyLabel({ ...p.key })}${state.key?.remembered ? " (used this session)" : ""}` : "Key memory: none yet",
-      "New projects start from your last mix settings",
+      p.key ? `Last confident key: ${keyLabel({ ...p.key })}` : "Key memory: none yet",
     ])}</section>`;
   }
   el.innerHTML = html;
@@ -943,40 +1731,171 @@ function syllables(word) {
   if (w.length > 2 && w.endsWith("e") && !w.endsWith("le") && n > 1) n--;
   return Math.max(1, n);
 }
+const BAR_TAG = /^\s*\[bar\s*(\d+)\]\s*/i;
+function parseLyrics() {
+  return session.lyrics.split("\n").map((raw) => {
+    const m = raw.match(BAR_TAG);
+    return { bar: m ? +m[1] : null, text: raw.replace(BAR_TAG, "") };
+  });
+}
 function updateGutter() {
-  $("gutter").textContent = state.lyrics
-    .split("\n")
-    .map((line) => line.split(/\s+/).reduce((a, w) => a + syllables(w), 0) || "")
+  $("gutter").textContent = parseLyrics()
+    .map((l) => l.text.split(/\s+/).reduce((a, w) => a + syllables(w), 0) || "")
     .join("\n");
 }
 let prompterY = 0;
 let prompterLast = 0;
 function openPrompter() {
-  $("prompterText").textContent = state.lyrics || "(No lyrics yet — write them in the Lyrics tab.)";
+  const lines = parseLyrics();
+  $("prompterText").innerHTML = lines.length && session.lyrics.trim()
+    ? lines.map((l, i) => `<div class="pl" data-i="${i}">${l.bar ? `<small>BAR ${l.bar}</small>` : ""}${esc(l.text) || "&nbsp;"}</div>`).join("")
+    : "(No lyrics yet — write them in the Lyrics tab.)";
+  $("prompterText").querySelectorAll(".pl").forEach((d) => (d.onclick = () => (ui.lyricLine = +d.dataset.i)));
   $("prompter").hidden = false;
   $("prompterScroll").scrollTop = 0;
   prompterY = 0;
   prompterLast = performance.now();
-  if (!state.recording) {
+  if (!ui.playing) {
     requestAnimationFrame(function loop() {
       if ($("prompter").hidden) return;
-      prompterTick();
+      prompterTick(currentPos());
       requestAnimationFrame(loop);
     });
   }
 }
-function prompterTick() {
+function prompterTick(pos) {
   if ($("prompter").hidden) return;
-  const now = performance.now();
+  const lines = parseLyrics();
+  const synced = bpm() && lines.some((l) => l.bar);
+  if (synced) {
+    const bar = Math.floor(Math.max(0, pos) / barSeconds(bpm())) + 1;
+    let cur = 0;
+    lines.forEach((l, i) => {
+      if (l.bar && l.bar <= bar) cur = i;
+    });
+    ui.lyricLine = cur;
+  }
+  const els = $("prompterText").querySelectorAll(".pl");
+  els.forEach((d, i) => d.classList.toggle("on", i === ui.lyricLine));
   const el = $("prompterScroll");
-  prompterY += (state.settings.scroll * (now - prompterLast)) / 1000;
-  prompterLast = now;
-  if (Math.abs(el.scrollTop - Math.floor(prompterY)) > 40) prompterY = el.scrollTop;
-  el.scrollTop = prompterY;
+  const target = els[ui.lyricLine];
+  if (target && (synced || ui.recording)) {
+    const want = target.offsetTop - el.clientHeight / 2 + target.clientHeight / 2;
+    el.scrollTop += (want - el.scrollTop) * 0.15;
+    prompterY = el.scrollTop;
+  } else {
+    const now = performance.now();
+    prompterY += ((S_().scroll || 0) * (now - prompterLast)) / 1000;
+    prompterLast = now;
+    el.scrollTop = prompterY;
+  }
 }
 const closePrompter = () => ($("prompter").hidden = true);
 
-// ---------------------------------------------------------------- controls
+// ---------------------------------------------------------------- sessions menu
+async function renderSessionMenu() {
+  const m = $("sessionMenu");
+  const all = await S.listSessions();
+  const active = all.filter((s) => !s.deletedAt);
+  const trash = all.filter((s) => s.deletedAt);
+  m.innerHTML = '<div class="mh">Sessions</div>';
+  for (const s of active) {
+    const b = document.createElement("button");
+    b.className = s.id === session.id ? "cur" : "";
+    b.innerHTML = `<span>${esc(s.name)}</span><small>${new Date(s.updated).toLocaleDateString()}</small>`;
+    b.onclick = () => openSession(s.id);
+    m.append(b);
+  }
+  m.append(document.createElement("hr"));
+  const act = (label, fn) => {
+    const b = Object.assign(document.createElement("button"), { textContent: label });
+    b.onclick = fn;
+    m.append(b);
+  };
+  act("+ New session", async () => {
+    const name = prompt("Session name", `Session ${active.length + 1}`);
+    if (!name) return;
+    await S.saveSession(session);
+    await switchTo(S.newSession(name));
+  });
+  act("Rename…", () => {
+    const name = prompt("Rename session", session.name);
+    if (name) edit("Rename session", () => (session.name = name), { audioChange: false });
+    $("sessionName").textContent = session.name;
+    m.hidden = true;
+  });
+  act("Duplicate", async () => {
+    await S.saveSession(session);
+    await switchTo(S.duplicateSession(session));
+    toast("Session duplicated.");
+  });
+  act("Delete (to trash)", async () => {
+    if (!confirm(`Move "${session.name}" to the trash? It stays recoverable for 30 days.`)) return;
+    await S.trashSession(session.id);
+    const rest = (await S.listSessions()).filter((s) => !s.deletedAt && s.id !== session.id);
+    if (rest.length) await openSession(rest[0].id);
+    else await switchTo(S.newSession("Session 1"));
+  });
+  if (trash.length) {
+    m.append(document.createElement("hr"));
+    m.append(Object.assign(document.createElement("div"), { className: "mh", textContent: "Trash (30 days)" }));
+    for (const s of trash) {
+      const b = document.createElement("button");
+      b.innerHTML = `<span>${esc(s.name)}</span><small>Restore</small>`;
+      b.onclick = async () => {
+        await S.trashSession(s.id, false);
+        renderSessionMenu();
+      };
+      m.append(b);
+    }
+  }
+}
+async function openSession(id) {
+  const s = await S.loadSession(id);
+  if (!s) return toast("That session couldn't be loaded.");
+  await S.saveSession(session);
+  await switchTo(s);
+}
+async function switchTo(s) {
+  stopPlayback(false);
+  session = s;
+  history.undoStack = [];
+  history.redoStack = [];
+  ui.run = null;
+  ui.master = null;
+  ui.stale = false;
+  ui.selClip = null;
+  ui.selTrack = s.tracks[0]?.id || null;
+  ui.playhead = 0;
+  await loadSessionAudio();
+  await S.saveSession(session);
+  $("sessionMenu").hidden = true;
+  bindSettingsToUi();
+  renderAll();
+  fitView();
+  updateUndo();
+  $("report").innerHTML = '<p class="muted">Run <b>Automix</b> and the engine logs every decision it makes, with the numbers.</p>';
+  ui.stageState = {};
+  paintChain();
+  status(`Opened "${s.name}".`);
+}
+async function loadSessionAudio() {
+  if (session.beat) await loadAudio(session.beat.id);
+  for (const t of session.tracks) for (const k of t.takes) await loadAudio(k.id);
+}
+
+// ---------------------------------------------------------------- render + controls
+function renderAll() {
+  $("sessionName").textContent = session.name;
+  $("btnLoop").classList.toggle("on", session.loop.on);
+  $("btnClick").classList.toggle("on", !!S_().click);
+  $("btnSnap").classList.toggle("on", !!S_().snap);
+  renderLanes();
+  renderStrips();
+  updateClipInsp();
+  updateChips();
+  applyMixer();
+}
 function showTab(name) {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
@@ -986,125 +1905,194 @@ function showTab(name) {
   });
 }
 function updateChips() {
-  const s = state.settings;
-  $("chipBpm").textContent = s.bpm ? `${s.bpm} BPM` : "— BPM";
-  const k = state.key && s.key === "auto" ? keyLabel(state.key) : s.key === "auto" ? "Key auto" : `${NOTE_NAMES[+s.key]} ${SCALES[s.scale].label.toLowerCase()}`;
+  const s = S_();
+  const k = ui.key && s.key === "auto" ? keyLabel(ui.key) : s.key === "auto" ? "Key auto" : `${NOTE_NAMES[+s.key]} ${SCALES[s.scale].label.toLowerCase()}`;
   $("chipKey").textContent = k;
-  $("chipKey").classList.toggle("hot", s.tuneStyle !== "off");
+  $("chipKey").classList.toggle("hot", s.tuneStyle !== "off" && s.stages.tune);
 }
 function setMode(mode, user = false) {
-  state.mode = mode;
+  const s = S_();
+  const apply = () => {
+    session.mode = mode;
+    if (user && mode === "vo") {
+      if (s.targetLufs === -14) s.targetLufs = -16;
+      if (s.tuneStyle === "natural") s.tuneStyle = "off";
+    } else if (user && mode === "rap") {
+      if (s.targetLufs === -16) s.targetLufs = -14;
+      if (s.tuneStyle === "off") s.tuneStyle = "natural";
+    }
+  };
+  if (user) edit(`Mode: ${mode}`, apply, { redraw: false });
+  else apply();
   setSeg("modeSeg", "mode", mode);
-  const s = state.settings;
-  if (user && mode === "vo") {
-    if (s.targetLufs === -14) s.targetLufs = -16;
-    if (s.tuneStyle === "natural") s.tuneStyle = "off";
-  } else if (user && mode === "rap") {
-    if (s.targetLufs === -16) s.targetLufs = -14;
-    if (s.tuneStyle === "off") s.tuneStyle = "natural";
-  }
   $("target").value = String(s.targetLufs);
   setSeg("styleSeg", "style", s.tuneStyle);
   updateChips();
-  markStale();
-  saveMeta();
+}
+
+/** Push the current session's settings into every control. */
+function bindSettingsToUi() {
+  const s = S_();
+  const set = (id, v) => ($(id).value = v);
+  set("bpm", s.bpm || 0);
+  set("countIn", String(s.countIn ?? 1));
+  set("clickLevel", s.clickLevel ?? 0.6);
+  metro.level = s.clickLevel ?? 0.6;
+  set("inGain", s.inputGainDb ?? 0);
+  $("inGainOut").textContent = `${s.inputGainDb ?? 0} dB`;
+  set("latency", s.latencyMs || 0);
+  $("latencyOut").textContent = `${s.latencyMs || 0} ms`;
+  set("balance", s.balance || 0);
+  $("balanceOut").textContent = `${s.balance > 0 ? "+" : ""}${s.balance || 0} dB`;
+  set("space", s.space ?? 1);
+  $("spaceOut").textContent = `${Math.round((s.space ?? 1) * 100)}%`;
+  set("target", String(s.targetLufs));
+  set("reverbSel", s.reverb || "auto");
+  set("delaySel", s.delayDiv || "auto");
+  set("keySel", String(s.key));
+  set("scaleSel", s.scale);
+  $("scaleSel").disabled = s.key === "auto";
+  $("alignDoubles").checked = s.alignDoubles !== false;
+  set("tight", s.alignTight ?? 0.9);
+  $("tightOut").textContent = `${Math.round((s.alignTight ?? 0.9) * 100)}%`;
+  set("scrollSpeed", s.scroll ?? 18);
+  $("usePrompter").checked = !!s.prompter;
+  $("transcribe").checked = !!s.transcribe;
+  set("exportRate", String(s.exportRate || 48000));
+  $("lyrics").value = session.lyrics;
+  updateGutter();
+  setMode(session.mode);
+  paintChain();
 }
 
 function bindControls() {
-  const s = state.settings;
+  const s = () => S_();
   document.querySelectorAll("#modeSeg button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode, true)));
   document.querySelectorAll("#abSeg button").forEach((b) => (b.onclick = () => setAB(b.dataset.ab)));
   document.querySelectorAll("#styleSeg button").forEach((b) => (b.onclick = () => {
-    s.tuneStyle = b.dataset.style;
-    setSeg("styleSeg", "style", s.tuneStyle);
+    edit("Tune style", () => (s().tuneStyle = b.dataset.style), { redraw: false });
+    setSeg("styleSeg", "style", s().tuneStyle);
     updateChips();
-    markStale();
-    saveMeta();
   }));
-  document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
-  $("btnPlay").onclick = () => (state.recording ? finishRecording() : state.playing ? stopPlayback() : startPlayback());
+  document.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
+    showTab(b.dataset.tab);
+    if (b.dataset.tab === "mixer") renderStrips();
+  }));
+  $("btnPlay").onclick = () => (ui.recording ? finishRecording() : ui.playing ? pause() : startPlayback());
+  $("btnStop").onclick = stop;
   $("btnRec").onclick = toggleRecord;
-  $("btnReturn").onclick = () => {
-    const playing = state.playing && !state.recording;
-    stopPlayback();
-    state.playhead = 0;
-    placePlayhead(0);
-    $("clock").textContent = fmtTime(0);
-    if (playing) startPlayback(0);
-  };
+  $("btnReturn").onclick = returnToZero;
   $("btnAutomix").onclick = automix;
+  $("btnCancel").onclick = () => ui.cancel && (ui.cancel.cancelled = true);
   $("btnMic").onclick = ensureMic;
   $("micSelect").onchange = switchMic;
   $("monitor").onchange = (e) => mic.monitor.gain.setTargetAtTime(e.target.checked ? 1 : 0, ctx.currentTime, 0.01);
-
-  const roleSel = $("nextRole");
-  for (const [k, r] of Object.entries(ROLES)) if (!r.hidden) roleSel.add(new Option(r.label, k));
-  roleSel.value = s.nextRole;
-  roleSel.onchange = () => {
-    s.nextRole = roleSel.value;
-    saveMeta();
+  $("btnCalibrate").onclick = calibrate;
+  $("btnLoop").onclick = () => edit(session.loop.on ? "Loop off" : "Loop on", () => (session.loop.on = !session.loop.on), { audioChange: false });
+  $("btnClick").onclick = () => edit("Click", () => (s().click = !s().click), { audioChange: false });
+  $("btnSnap").onclick = () => edit("Snap", () => (s().snap = !s().snap), { audioChange: false });
+  $("btnTap").onclick = () => {
+    const b = tapper.tap();
+    if (b) {
+      edit("Tap tempo", () => (s().bpm = b), { redraw: true });
+      $("bpm").value = b;
+    }
+    status(b ? `Tap tempo: ${b} BPM` : "Keep tapping…");
   };
+  $("btnUndo").onclick = undo;
+  $("btnRedo").onclick = redo;
+  $("btnSplit").onclick = splitAtPlayhead;
+  $("btnDelClip").onclick = deleteClip;
+  $("btnMarker").onclick = addMarker;
+  $("btnZoomIn").onclick = () => zoom(1.5);
+  $("btnZoomOut").onclick = () => zoom(1 / 1.5);
+  $("btnFit").onclick = fitView;
+  $("btnAddTrack").onclick = () => ($("addMenu").hidden = !$("addMenu").hidden);
+  document.querySelectorAll("#addMenu button").forEach((b) => (b.onclick = () => {
+    $("addMenu").hidden = true;
+    edit("Add track", () => {
+      const t = S.newTrack(session, b.dataset.type);
+      session.tracks.push(t);
+      ui.selTrack = t.id;
+    }, { audioChange: false });
+  }));
+  $("btnSession").onclick = async () => {
+    const m = $("sessionMenu");
+    m.hidden = !m.hidden;
+    if (!m.hidden) await renderSessionMenu();
+  };
+  $("btnExport").onclick = () => ($("exportMenu").hidden = !$("exportMenu").hidden);
+  document.querySelectorAll("#exportMenu button").forEach((b) => (b.onclick = () => exportAs(b.dataset.exp).catch((e) => toast(`Export failed: ${e.message}`))));
+  $("exportRate").onchange = (e) => edit("Export rate", () => (s().exportRate = +e.target.value), { audioChange: false, redraw: false });
+  document.addEventListener("pointerdown", (e) => {
+    for (const id of ["sessionMenu", "addMenu", "exportMenu"]) {
+      const m = $(id);
+      if (!m.hidden && !m.parentElement.contains(e.target)) m.hidden = true;
+    }
+  });
+
+  const range = (id, key, outId, fmt, { audioChange = true, after } = {}) => {
+    const el = $(id);
+    el.oninput = () => {
+      history.push(session, `${id}`, `set:${id}`);
+      s()[key] = +el.value;
+      if (outId) $(outId).textContent = fmt(+el.value);
+      if (audioChange) markStale();
+      save();
+      after?.();
+      updateUndo();
+    };
+  };
+  range("balance", "balance", "balanceOut", (v) => `${v > 0 ? "+" : ""}${v} dB`);
+  range("space", "space", "spaceOut", (v) => `${Math.round(v * 100)}%`, { after: applyMixer });
+  range("latency", "latencyMs", "latencyOut", (v) => `${v > 0 ? "+" : ""}${v} ms`, { audioChange: false, after: updateRoundTrip });
+  range("tight", "alignTight", "tightOut", (v) => `${Math.round(v * 100)}%`);
+  range("scrollSpeed", "scroll", null, null, { audioChange: false });
+  range("clickLevel", "clickLevel", null, null, { audioChange: false, after: () => (metro.level = S_().clickLevel) });
+  range("inGain", "inputGainDb", "inGainOut", (v) => (v <= -60 ? "−∞ dB" : `${v > 0 ? "+" : ""}${v} dB`), {
+    audioChange: false,
+    after: () => mic.gain.gain.setTargetAtTime(S_().inputGainDb <= -60 ? 0 : dbToLin(S_().inputGainDb), ctx.currentTime, 0.01),
+  });
+  $("bpm").onchange = (e) => edit("Tempo", () => (s().bpm = Math.max(0, +e.target.value || 0)));
+  $("countIn").onchange = (e) => edit("Count-in", () => (s().countIn = +e.target.value), { audioChange: false, redraw: false });
+  $("target").onchange = (e) => edit("Loudness target", () => (s().targetLufs = +e.target.value), { redraw: false });
+  $("reverbSel").onchange = (e) => edit("Reverb", () => (s().reverb = e.target.value), { redraw: false });
+  $("delaySel").onchange = (e) => edit("Delay", () => (s().delayDiv = e.target.value), { redraw: false });
+  $("usePrompter").onchange = (e) => edit("Prompter", () => (s().prompter = e.target.checked), { audioChange: false, redraw: false });
+  $("transcribe").onchange = (e) => edit("Transcription", () => (s().transcribe = e.target.checked), { audioChange: false, redraw: false });
+  $("alignDoubles").onchange = (e) => edit("Align doubles", () => (s().alignDoubles = e.target.checked), { redraw: false });
   const keySel = $("keySel");
   keySel.add(new Option("Auto-detect", "auto"));
   NOTE_NAMES.forEach((n, i) => keySel.add(new Option(n, String(i))));
-  keySel.value = String(s.key);
   const scaleSel = $("scaleSel");
   for (const [k, v] of Object.entries(SCALES)) scaleSel.add(new Option(v.label, k));
-  scaleSel.value = s.scale;
   keySel.onchange = scaleSel.onchange = () => {
-    s.key = keySel.value;
-    s.scale = scaleSel.value;
-    scaleSel.disabled = s.key === "auto";
+    edit("Key / scale", () => {
+      s().key = keySel.value;
+      s().scale = scaleSel.value;
+    }, { redraw: false });
+    scaleSel.disabled = s().key === "auto";
     updateChips();
-    markStale();
-    saveMeta();
-  };
-  scaleSel.disabled = s.key === "auto";
-  $("alignDoubles").checked = s.alignDoubles;
-  $("alignDoubles").onchange = (e) => {
-    s.alignDoubles = e.target.checked;
-    markStale();
-    saveMeta();
   };
 
-  const bindRange = (id, key, outId, fmt) => {
-    const el = $(id);
-    el.value = s[key];
-    const show = () => outId && ($(outId).textContent = fmt(+el.value));
-    show();
-    el.oninput = () => {
-      s[key] = +el.value;
-      show();
-      saveMeta();
-    };
-    el.onchange = () => {
-      markStale();
-      updateChips();
-    };
-  };
-  bindRange("balance", "balance", "balanceOut", (v) => `${v > 0 ? "+" : ""}${v} dB`);
-  bindRange("space", "space", "spaceOut", (v) => `${Math.round(v * 100)}%`);
-  bindRange("latency", "latencyMs", "latencyOut", (v) => `${v > 0 ? "+" : ""}${v} ms`);
-  bindRange("tight", "alignTight", "tightOut", (v) => `${Math.round(v * 100)}%`);
-  bindRange("scrollSpeed", "scroll", null, null);
-  bindRange("bpm", "bpm", null, null);
-  $("target").value = String(s.targetLufs);
-  $("target").onchange = (e) => {
-    s.targetLufs = +e.target.value;
+  // Clip inspector
+  const clipEdit = (label, key, fn) => {
+    const t = trackById(ui.selTrack);
+    const c = t?.clips.find((x) => x.id === ui.selClip);
+    if (!c) return;
+    history.push(session, label, `${key}:${c.id}`);
+    fn(c);
     markStale();
-    saveMeta();
+    save();
+    updateUndo();
+    updateClipInsp();
+    renderLanesOnly();
   };
-  $("usePrompter").checked = s.prompter;
-  $("usePrompter").onchange = (e) => {
-    s.prompter = e.target.checked;
-    saveMeta();
-  };
-  $("transcribe").checked = s.transcribe;
-  $("transcribe").onchange = (e) => {
-    s.transcribe = e.target.checked;
-    saveMeta();
-  };
+  $("clipGain").oninput = (e) => clipEdit("Clip gain", "cg", (c) => (c.gainDb = +e.target.value));
+  $("clipFadeIn").onchange = (e) => clipEdit("Fade in", "fi", (c) => (c.fadeIn = clamp(+e.target.value / 1000, 0, (c.end - c.start) / 2)));
+  $("clipFadeOut").onchange = (e) => clipEdit("Fade out", "fo", (c) => (c.fadeOut = clamp(+e.target.value / 1000, 0, (c.end - c.start) / 2)));
 
+  // Imports
   $("btnImportBeat").onclick = () => $("fileBeat").click();
   $("btnImportVocal").onclick = () => $("fileVocal").click();
   $("fileBeat").onchange = (e) => {
@@ -1117,23 +2105,85 @@ function bindControls() {
     e.target.value = "";
     for (const f of files) await importVocal(f);
   };
-  $("btnExportMix").onclick = exportMaster;
-  $("btnExportStems").onclick = exportStems;
-  $("btnExportRaw").onclick = exportRaw;
-
-  const ly = $("lyrics");
-  ly.value = state.lyrics;
-  ly.oninput = () => {
-    state.lyrics = ly.value;
+  $("btnImportLyrics").onclick = () => $("fileLyrics").click();
+  $("fileLyrics").onchange = async (e) => {
+    const [f] = e.target.files;
+    e.target.value = "";
+    if (!f) return;
+    const text = await f.text();
+    edit("Import lyrics", () => (session.lyrics = text), { audioChange: false, redraw: false });
+    $("lyrics").value = text;
     updateGutter();
-    saveMeta();
+  };
+  const ly = $("lyrics");
+  ly.oninput = () => {
+    history.push(session, "Edit lyrics", "lyrics");
+    session.lyrics = ly.value;
+    updateGutter();
+    save();
+    updateUndo();
   };
   ly.onscroll = () => ($("gutter").scrollTop = ly.scrollTop);
-  updateGutter();
   $("btnPrompter").onclick = openPrompter;
   $("prompterClose").onclick = closePrompter;
-  $("ruler").onpointerdown = (e) => seekFromEvent(e, $("ruler"));
 
+  // Ruler: click = seek, drag = set loop region, click a marker = jump.
+  const ruler = $("ruler");
+  ruler.onpointerdown = (e) => {
+    const r = ruler.getBoundingClientRect();
+    const x0 = e.clientX - r.left;
+    const mk = session.markers.find((m) => Math.abs(t2x(m.t) - x0) < 8);
+    let dragging = false;
+    ruler.setPointerCapture(e.pointerId);
+    ruler.onpointermove = (ev) => {
+      const x = ev.clientX - r.left;
+      if (!dragging && Math.abs(x - x0) < 5) return;
+      if (!dragging) history.push(session, "Set loop");
+      dragging = true;
+      const snap = (t) => (bpm() && !ev.altKey ? snapTime(t, bpm(), 1) : t);
+      const a = snap(Math.max(0, x2t(Math.min(x0, x))));
+      const b = snap(Math.max(0, x2t(Math.max(x0, x))));
+      session.loop = { on: true, start: a, end: Math.max(b, a + 0.25) };
+      $("btnLoop").classList.add("on");
+      renderLanesOnly();
+    };
+    ruler.onpointerup = () => {
+      ruler.onpointermove = null;
+      ruler.onpointerup = null;
+      if (dragging) {
+        save();
+        updateUndo();
+        toast(`Loop ${fmtTime(session.loop.start)} – ${fmtTime(session.loop.end)} (L toggles)`);
+      } else seek(mk ? mk.t : x2t(x0));
+    };
+  };
+  ruler.ondblclick = (e) => {
+    const r = ruler.getBoundingClientRect();
+    const mk = session.markers.find((m) => Math.abs(t2x(m.t) - (e.clientX - r.left)) < 8);
+    if (!mk) return;
+    const name = prompt("Marker name (empty deletes)", mk.name);
+    if (name === null) return;
+    edit(name ? "Rename marker" : "Delete marker", () => {
+      if (name) mk.name = name;
+      else session.markers = session.markers.filter((m) => m !== mk);
+    }, { audioChange: false });
+  };
+
+  // Wheel: Ctrl/⌘ zooms around the cursor; sideways or Shift scrolls time.
+  $("timeline").addEventListener("wheel", (e) => {
+    const r = $("ruler").getBoundingClientRect();
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      zoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, x2t(e.clientX - r.left));
+    } else if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey) {
+      e.preventDefault();
+      ui.view.start = Math.max(0, ui.view.start + (e.shiftKey ? e.deltaY : e.deltaX) / ui.view.pps);
+      ui.view.fit = false;
+      renderLanesOnly();
+    }
+  }, { passive: false });
+
+  // Drag & drop
   const tl = $("timeline");
   tl.ondragover = (e) => {
     e.preventDefault();
@@ -1144,54 +2194,111 @@ function bindControls() {
     e.preventDefault();
     tl.classList.remove("drag");
     const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("audio") || /\.(wav|mp3|m4a|aac|flac|ogg|aif+)$/i.test(f.name));
-    const onBeatLane = e.target.closest?.(".lane.beat");
+    const onBeat = e.target.closest?.(".lane.beat");
     for (const f of files) {
-      if (!state.beat || onBeatLane) await importBeat(f);
+      if (!session.beat || onBeat) await importBeat(f);
       else await importVocal(f);
     }
   };
 
+  // Keyboard map (never hijacks typing).
   window.addEventListener("keydown", (e) => {
     if (e.target.matches("input, textarea, select")) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const k = e.key;
+    if (mod && (k === "z" || k === "Z")) {
+      e.preventDefault();
+      return e.shiftKey ? redo() : undo();
+    }
+    if (mod && (k === "y" || k === "Y")) {
+      e.preventDefault();
+      return redo();
+    }
+    if (mod && (k === "s" || k === "S")) {
+      e.preventDefault();
+      S.saveSession(session).then(() => toast("Session saved."));
+      return;
+    }
+    if (mod) return;
     if (e.code === "Space") {
       e.preventDefault();
       $("btnPlay").click();
-    } else if (e.key === "r" || e.key === "R") toggleRecord();
-    else if (e.key === "b" || e.key === "B") setAB(state.ab === "A" ? "B" : "A");
-    else if (e.key === "Home") $("btnReturn").click();
-    else if (e.key === "Escape") closePrompter();
+    } else if (k === "Enter") stop();
+    else if (k === "r" || k === "R") toggleRecord();
+    else if (k === "l" || k === "L") $("btnLoop").click();
+    else if (k === "c" || k === "C") $("btnClick").click();
+    else if (k === "t" || k === "T") $("btnTap").click();
+    else if (k === "e" || k === "E") $("btnExport").click();
+    else if (k === "b" || k === "B") setAB(ui.ab === "A" ? "B" : "A");
+    else if (k === "x" || k === "X") splitAtPlayhead();
+    else if (k === "m" || k === "M") addMarker();
+    else if (k === "f" || k === "F") fitView();
+    else if (k === "Delete" || k === "Backspace") deleteClip();
+    else if (k === "Home") returnToZero();
+    else if (k === "+" || k === "=") zoom(1.5);
+    else if (k === "-" || k === "_") zoom(1 / 1.5);
+    else if (k === "ArrowLeft" || k === "ArrowRight") {
+      e.preventDefault();
+      nudge(k === "ArrowLeft" ? -1 : 1, e.shiftKey);
+    } else if ((k === "ArrowDown" || k === "ArrowUp") && !$("prompter").hidden) {
+      e.preventDefault();
+      ui.lyricLine = clamp(ui.lyricLine + (k === "ArrowDown" ? 1 : -1), 0, parseLyrics().length - 1);
+    } else if (k === "Escape") {
+      closePrompter();
+      for (const id of ["sessionMenu", "addMenu", "exportMenu"]) $(id).hidden = true;
+    }
   });
   let resizeTimer;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-      renderRuler();
-      drawLanes();
+      if (ui.view.fit) fitView();
+      else renderLanesOnly();
       drawPitch();
-      placePlayhead(currentPos());
       document.querySelectorAll(".seg").forEach(moveThumb);
     }, 120);
   });
   navigator.mediaDevices?.addEventListener?.("devicechange", listDevices);
 }
+function addMarker() {
+  const t = currentPos();
+  edit("Add marker", () => session.markers.push({ t, name: `M${session.markers.length + 1}` }), { audioChange: false });
+}
 
-// ---------------------------------------------------------------- app shell
+// ---------------------------------------------------------------- app shell + boot
 if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
 if (["localhost", "127.0.0.1"].includes(location.hostname)) {
-  // Keeps the local server alive while the booth is open; it exits on its own after.
   const ping = () => fetch("__alive", { cache: "no-store" }).catch(() => {});
   ping();
   setInterval(ping, 15000);
 }
 
-await restore();
+ui.profile = (await store.get("profile")) || null;
+let first = await S.migrateLegacy();
+if (!first) {
+  const cur = await store.get("currentSession");
+  first = cur ? await S.loadSession(cur) : null;
+  if (!first) {
+    const list = (await S.listSessions()).filter((x) => !x.deletedAt);
+    first = list.length ? await S.loadSession(list[0].id) : null;
+  }
+}
+if (!first) {
+  first = S.newSession("Session 1");
+  const taste = await store.get("taste");
+  if (taste) Object.assign(first.settings, taste);
+}
+session = first;
+await loadSessionAudio();
+ui.selTrack = session.tracks[0]?.id || null;
 buildChain();
 bindControls();
-setMode(state.mode);
-state.stale = false;
+bindSettingsToUi();
 setSeg("abSeg", "ab", "A");
-renderLanes();
-updateChips();
+fitView();
+renderAll();
+updateUndo();
+await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
-status(state.tracks.length ? `Restored ${state.tracks.length} take(s). Hit Automix to engineer.` : "Ready. Drop a beat or press R to record.");
-window.__booth = { state, automix, importBeat, importVocal, toggleRecord, ctx };
+status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
+window.__booth = { get session() { return session; }, ui, audio, automix, importBeat, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };

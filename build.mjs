@@ -4,10 +4,11 @@
 // (service worker, manifest, icons) add offline mode and "Install app".
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
-const ORDER = ["dsp", "store", "wav", "tune", "automix", "doubles", "engine", "app"];
+const ORDER = ["dsp", "store", "wav", "session", "metro", "mp3", "tune", "automix", "doubles", "engine", "app"];
 
 function bundle() {
-  let out = "const __m = {};\n";
+  // MP3 encoder (LGPL lamejs) travels as a string; mp3.js spins it up in a Worker.
+  let out = `globalThis.__LAME_SRC = ${JSON.stringify(readFileSync("js/vendor/lame.min.js", "utf8"))};\nconst __m = {};\n`;
   for (const name of ORDER) {
     let src = readFileSync(`js/${name}.js`, "utf8");
     const exported = [];
