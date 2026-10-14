@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MV Booth</title>
+    <meta name="description" content="Private vocal booth: record voice-overs and rap vocals, then let the engine mix and master them." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23090b0e%27/%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%277%27 fill=%27%23ff8a3d%27/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">MV<span>BOOTH</span></div>
+      <div class="seg" id="modeSeg" role="radiogroup" aria-label="Mix mode">
+        <button data-mode="rap" role="radio">Rap</button>
+        <button data-mode="vo" role="radio">Voice-over</button>
+      </div>
+      <div class="transport">
+        <button id="btnReturn" class="icon" title="Return to start (Home)" aria-label="Return to start">
+          <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
+        </button>
+        <button id="btnPlay" class="icon" title="Play / stop (Space)" aria-label="Play">
+          <svg viewBox="0 0 24 24" class="i-play"><path d="M7 4v16l13-8z" /></svg>
+          <svg viewBox="0 0 24 24" class="i-stop"><path d="M6 6h12v12H6z" /></svg>
+        </button>
+        <button id="btnRec" class="icon rec" title="Record a take (R)" aria-label="Record">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" /></svg>
+        </button>
+        <div class="clock" id="clock">00:00.0</div>
+        <div class="meter" title="Input level"><i id="inMeter"></i></div>
+      </div>
+      <div class="seg ab" id="abSeg" aria-label="Compare raw and mixed">
+        <button data-ab="A" title="Hear the raw takes (B key toggles)">Raw</button>
+        <button data-ab="B" title="Hear the engine's mix">Mix</button>
+      </div>
+      <button id="btnAutomix" class="cta">Automix</button>
+    </header>
+
+    <main>
+      <section class="timeline" id="timeline">
+        <div class="ruler" id="ruler"></div>
+        <div class="lanes" id="lanes"></div>
+        <div class="playhead" id="playhead"></div>
+        <div class="empty" id="emptyHint">
+          <h2>Drop a beat. Hit record.</h2>
+          <p>Drag an instrumental anywhere on this panel, or skip the beat for a dry voice-over. Every take lands as its own lane; <b>Automix</b> does the engineering.</p>
+        </div>
+      </section>
+
+      <aside class="side">
+        <nav class="tabs" role="tablist">
+          <button data-tab="booth" class="on">Booth</button>
+          <button data-tab="lyrics">Lyrics</button>
+          <button data-tab="engine">Engine</button>
+        </nav>
+
+        <div class="tab on" data-panel="booth">
+          <label class="field">Microphone
+            <select id="micSelect"><option value="">Default input</option></select>
+          </label>
+          <div class="row">
+            <button id="btnMic" class="ghost">Enable mic</button>
+            <label class="check"><input type="checkbox" id="monitor" /> Monitor</label>
+          </div>
+          <label class="field">Next take is a
+            <select id="nextRole"></select>
+          </label>
+          <div class="row">
+            <button id="btnImportBeat" class="ghost">Import beat</button>
+            <button id="btnImportVocal" class="ghost">Import vocal</button>
+          </div>
+          <input type="file" id="fileBeat" accept="audio/*" hidden />
+          <input type="file" id="fileVocal" accept="audio/*" multiple hidden />
+
+          <h3>Engine controls</h3>
+          <label class="field">Loudness target
+            <select id="target">
+              <option value="-14">Streaming · −14 LUFS</option>
+              <option value="-10">Loud / club · −10 LUFS</option>
+              <option value="-16">Podcast / VO · −16 LUFS</option>
+              <option value="-23">Broadcast · −23 LUFS</option>
+            </select>
+          </label>
+          <label class="field">Vocal vs beat <output id="balanceOut">0 dB</output>
+            <input type="range" id="balance" min="-6" max="6" step="0.5" value="0" />
+          </label>
+          <label class="field">Space (reverb + delay) <output id="spaceOut">100%</output>
+            <input type="range" id="space" min="0" max="2" step="0.05" value="1" />
+          </label>
+          <label class="field">Tempo (BPM, 0 = detect)
+            <input type="number" id="bpm" min="0" max="220" step="1" value="0" />
+          </label>
+
+          <h3>Recording</h3>
+          <label class="field">Latency trim <output id="latencyOut">0 ms</output>
+            <input type="range" id="latency" min="-120" max="120" step="1" value="0" />
+          </label>
+          <label class="check"><input type="checkbox" id="usePrompter" checked /> Show lyric prompter while recording</label>
+          <label class="check"><input type="checkbox" id="transcribe" /> Live transcription <small>(Chrome; audio goes to Google's speech service)</small></label>
+        </div>
+
+        <div class="tab" data-panel="lyrics">
+          <div class="lyric-wrap">
+            <div class="gutter" id="gutter" aria-hidden="true"></div>
+            <textarea id="lyrics" wrap="off" spellcheck="false" placeholder="Write the verse here. The gutter counts syllables per bar line."></textarea>
+          </div>
+          <div class="row">
+            <button id="btnPrompter" class="ghost">Open prompter</button>
+            <label class="field inline">Scroll <input type="range" id="scrollSpeed" min="0" max="80" step="1" value="18" /></label>
+          </div>
+        </div>
+
+        <div class="tab" data-panel="engine">
+          <div id="report" class="report"><p class="muted">Run <b>Automix</b> and the engine logs every decision it makes here.</p></div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="foot">
+      <div class="status"><span id="status">Ready.</span><div class="progress"><i id="progress"></i></div></div>
+      <div class="exports">
+        <button id="btnExportMix" class="ghost" disabled>Export master WAV</button>
+        <button id="btnExportStems" class="ghost" disabled>Export stems</button>
+        <button id="btnExportRaw" class="ghost">Export raw takes</button>
+      </div>
+    </footer>
+
+    <div class="prompter" id="prompter" hidden>
+      <button class="close" id="prompterClose" aria-label="Close prompter">Esc</button>
+      <div class="prompter-scroll" id="prompterScroll"><div id="prompterText"></div></div>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

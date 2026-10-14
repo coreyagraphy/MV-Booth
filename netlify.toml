@@ -1,0 +1,10 @@
+# Static site: publish the repo root.
+[build]
+  publish = "."
+  command = ""
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Permissions-Policy = "microphone=(self)"
+    X-Robots-Tag = "noindex, nofollow"
