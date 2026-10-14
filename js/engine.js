@@ -19,7 +19,7 @@ export const STAGES = [
 const overlap = (a, b) =>
   Math.max(0, Math.min(a.offset + a.buffer.duration, b.offset + b.buffer.duration) - Math.max(a.offset, b.offset));
 
-export async function runEngine({ tracks, beat, fs, mode, settings, profile, onStage, signal }) {
+export async function runEngine({ tracks, beats = [], fs, mode, settings, profile, onStage, signal }) {
   const st = { tune: true, align: true, double: true, clean: true, tone: true, dynamics: true, space: true, master: true, ...(settings.stages || {}) };
   const stage = (key, p, msg, state) => {
     if (signal?.cancelled) throw new Error("Cancelled");
@@ -109,10 +109,10 @@ export async function runEngine({ tracks, beat, fs, mode, settings, profile, onS
 
   // 5. SPACE + MASTER ------------------------------------------------------------
   stage("space", 0.3, "Balancing, unmasking, space");
-  const end = Math.max(beat ? (beat.offset || 0) + beat.buffer.duration : 0, ...all.map((t) => (t.offset || 0) + t.buffer?.duration || 0), ...virtual.map((v) => v.offset + prep.get(v.id).x.length / fs));
+  const end = Math.max(0, ...beats.map((b) => (b.offset || 0) + b.buffer.duration), ...all.map((t) => (t.offset || 0) + t.buffer?.duration || 0), ...virtual.map((v) => v.offset + prep.get(v.id).x.length / fs));
   const length = Math.ceil((end + 2) * fs);
   const mixInput = all.map((t) => ({ track: t, processed: processed.get(t.id) }));
-  const mix = await renderMix({ vocals: mixInput, beat: beat?.buffer || null, beatTrack: beat, fs, mode, settings, length });
+  const mix = await renderMix({ vocals: mixInput, beats, fs, mode, settings, length });
   stage("space", 1, null, st.space ? "done" : "skipped");
   stage("master", 1, st.master ? "Mastered" : "Master stage off", st.master ? "done" : "skipped");
 
@@ -130,6 +130,6 @@ export async function runEngine({ tracks, beat, fs, mode, settings, profile, onS
 }
 
 /** Re-render one stem from a finished engine run. */
-export function renderStem(run, { beat, fs, mode, settings }, only) {
-  return renderMix({ vocals: run.mixInput, beat: beat?.buffer || null, beatTrack: beat, fs, mode, settings, length: run.length, only });
+export function renderStem(run, { beats, fs, mode, settings }, only) {
+  return renderMix({ vocals: run.mixInput, beats, fs, mode, settings, length: run.length, only });
 }

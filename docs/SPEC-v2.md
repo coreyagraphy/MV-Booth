@@ -1,4 +1,4 @@
-# MV Booth 2.4: DAW-parity spec
+# MV Booth 2.5: DAW-parity spec
 
 Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked against what a typical DAW gives a vocal session (Pro Tools, Logic, LUNA, Studio One). Status is what ships in this repo now. **Built** means implemented and covered by the browser test run below.
 
@@ -24,8 +24,9 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Feature | In 2.0 spec | MV Booth 2.1 |
 |---|---|---|
 | Multitrack with typed tracks (Lead, Double, Ad-lib, Hook, Beat) | ✓ | **Built**: + Track menu |
+| Multi-stem beats (track-outs) | ✗ | **Built (2.5)**: import many files at once; one lane + strip per stem with volume, pan, mute, solo; role (full / drums / 808-bass / melody / FX) guessed from the name, editable; old sessions migrate to one "Full beat" stem |
 | Record-arm, one track at a time; arming decides the take type | ✓ | **Built**: "Next take is a" removed |
-| Mute / solo (solo overrides mute) | ✓ | **Built** |
+| Mute / solo (solo overrides mute) | ✓ | **Built**: vocal tracks and beat stems share one solo group |
 | Take lanes, ★ best, use whole take | ✓ | **Built**: collapsible per track |
 | Region comping (a different take per section) | ✗ | **Built**: split, then "Comp" swaps a take into the selected clip |
 | Clips: move, trim, split, delete | ✗ | **Built**: explicit tool picker (2.3): Move / Trim / Cut / Fade, keys 1–4, tool cursors, hint line; X cuts at playhead, Delete removes |
@@ -51,7 +52,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Feature | In 2.0 spec | MV Booth 2.1 |
 |---|---|---|
 | Per-track volume (−60…+6) and pan | ✓ | **Built**: header slider plus Mixer strips |
-| Per-track meters | ✗ | **Built**: live in the Mixer tab |
+| Per-track meters | ✗ | **Built**: live in the Mixer tab, one per vocal track and beat stem |
 | Separate reverb and delay sends per track | ✓ | **Built**: also drive the engine mix |
 | Reverb types / tempo-synced delay division | ✓ (1.2–2.8 s) | **Built**: Booth 0.35, Room 0.8, Plate 1.6, Hall 2.6 s; delay 1/4, dotted 1/8 (default), 1/8, 1/16 |
 | Master fader + limiter | ✓ | **Built**: live −1 dB limiter; exports use the true-peak mastering chain |
@@ -89,7 +90,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Delete to trash, recoverable for 30 days | ✓ | **Built** |
 | Master WAV 48 kHz / 24-bit | ✓ | **Built**: 48 or 44.1 kHz |
 | MP3 320 kbps in a Worker | ✓ | **Built**: lamejs (LGPL, vendored with licence) |
-| Stems (one per track) and raw takes | ✓ | **Built** |
+| Stems (one per track) and raw takes | ✓ | **Built**: one per vocal track and one per beat stem |
 | Lyric import (.txt), `[bar N]` sync, manual advance | ✓ | **Built**: highlighted line follows the playhead; ↓/↑ advance by hand |
 
 ## 2. Decisions on the spec's open questions (updated for 2.2)
@@ -103,7 +104,8 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 
 ```text
 session { id, name, mode, settings{…, stages{tune…master}}, lyrics, markers[{t,name}],
-          loop{on,start,end}, master{volumeDb}, beat{id,name,volumeDb,mute,offset},
+          loop{on,start,end}, master{volumeDb},
+          beats[{ id, name, kind: full|drums|bass|melody|fx, volumeDb, pan, mute, solo, offset }],
           tracks[{ id, name, type, color, armed, volumeDb, pan, mute, solo, fx, tune, dbl,
                    revSend, dlySend, showTakes,
                    takes[{ id, name, at, duration, best, transcript }],      // immutable audio
@@ -112,7 +114,7 @@ session { id, name, mode, settings{…, stages{tune…master}}, lyrics, markers[
 
 A clip plays take audio at source time `t − shift − take.at` for timeline `t` in `[start, end)`. Moving a clip shifts `start`, `end` and `shift` together. Comping swaps `takeId`. Audio lives in IndexedDB under `audio:<takeId>`.
 
-## 4. Verification (2.1 suite; 2.2 adds the punch and studio-tune suites; 2.4 adds the song/clean suite)
+## 4. Verification (2.1 suite; 2.2 adds the punch and studio-tune suites; 2.4 the song/clean suite; 2.5 the stems suite)
 
 The browser test drives the real UI in headless Chromium with a simulated mic. Twenty-four checks pass with zero page errors:
 - beat import + BPM detect, arm, ruler loop drag
@@ -123,6 +125,8 @@ The browser test drives the real UI in headless Chromium with a simulated mic. T
 - stage-off honoured, Automix −14.2 LUFS / −1.0 dBTP, stage states
 - WAV 48 kHz/24-bit, MP3 320
 - new/switch session, persistence after reload
+
+2.5 stems suite (18 checks): three stems imported in one go with roles guessed, BPM from the drums, role change + undo, mute leaves a stem out of the mix, report treats each stem by role, master −14.2 LUFS / −1.0 dBTP, stem export = vocal + 3 beat stems with the 808 folded to exact mono, solo, one mixer strip per stem, remove + undo, persistence after reload.
 
 2.4 song/clean suite (12 checks): checklist order and next-step highlight, section markers, clean settings stored per track, cleaned take added with clips swapped and the raw take bit-identical, report lines for breaths / pop / de-click / hum, undo, master tone/width/ceiling applied (−14.2 LUFS, −2.0 dBTP with a −2 ceiling). De-click bench: 0 false triggers on two clean 12 s vocals; 25–26 of 30 injected clicks found; median repair +8.5 to +9.2 dB.
 
@@ -149,4 +153,3 @@ CORS allows localhost and https://mv-booth.netlify.app, including Chrome's Priva
 2. Crossfade editor for comp boundaries.
 3. Manual EQ/compressor insert per track, overriding the engine.
 4. Backend vocal isolation / ML denoise stages on the same job API.
-5. Multi-stem beats (separate drums/bass/melody tracks) instead of one stereo beat.

@@ -121,7 +121,7 @@
           <div class="playhead" id="playhead"></div>
           <div class="empty" id="emptyHint">
             <h2>Drop the beat.<br />Step in the booth.</h2>
-            <p>Drag an instrumental anywhere here, add a track, arm it and press <b>R</b>. Every pass becomes a take you can comp. <b>Automix</b> tunes, aligns, doubles, mixes and masters it.</p>
+            <p>Drag an instrumental (or all its stems at once) anywhere here, add a track, arm it and press <b>R</b>. Every pass becomes a take you can comp. <b>Automix</b> tunes, aligns, doubles, mixes and masters it.</p>
           </div>
         </div>
       </section>
@@ -182,10 +182,10 @@
             <p class="muted small">Calibrate: hold your headphones to the mic (or use speakers). The booth plays four clicks and measures when they come back.</p>
             <h3>Import</h3>
             <div class="row">
-              <button id="btnImportBeat" class="btn">Import beat</button>
+              <button id="btnImportBeat" class="btn" title="One beat file, or select all the stems (drums, 808, melody…) at once">Import beat / stems</button>
               <button id="btnImportVocal" class="btn">Import vocal</button>
             </div>
-            <input type="file" id="fileBeat" accept="audio/*" hidden />
+            <input type="file" id="fileBeat" accept="audio/*" multiple hidden />
             <input type="file" id="fileVocal" accept="audio/*" multiple hidden />
             <h3>Recording</h3>
             <label class="check"><input type="checkbox" id="usePrompter" checked /> Lyric prompter while recording</label>

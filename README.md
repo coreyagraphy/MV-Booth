@@ -45,6 +45,20 @@ Per track, applied every time you Automix:
 
 The **Mixer → Master** section sets the final polish Automix applies: **Tone** (neutral / warm / bright / dark), **Width** (0–150 %), **Ceiling** (−0.3, −1 or −2 dBTP).
 
+## Beat stems
+
+Import one beat file, or the stems (track-outs) all at once. Automix keeps the producer's balance between the stems, sets the whole beat bus against your vocal, then treats each stem by its role:
+
+| Role | What Automix does |
+| --- | --- |
+| **Drums** | Light presence dip, never ducked: the groove keeps its punch. |
+| **808 / Bass** | Folded to mono, centred, 25 Hz rumble cut, never ducked. |
+| **Melody** | Carved where it crowds your voice and ducked a little deeper while you rap. |
+| **FX / Other** | Ducked hardest while you speak. |
+| **Full beat** | A two-track beat: carved and ducked as one. |
+
+Tempo is detected from the drums stem. **Export → Stems** writes one file per vocal track and one per beat stem. Sessions from before 2.5 open with their beat as a single "Full beat" stem.
+
 ## Session flow (DAW basics)
 
 New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language walkthrough of the tools, mixer, presets and tuning. While you record, a red **RECORDING** bar shows the take time and your input level, and your waveform draws in red on the track.
@@ -52,7 +66,8 @@ New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language 
 
 | Step | How |
 | --- | --- |
-| Beat | Drag an instrumental onto the timeline, or **Booth → Import beat**. Tempo is detected; **Tap** (T) or type it to override. |
+| Beat | Drag an instrumental onto the timeline, or **Booth → Import beat / stems**. Tempo is detected; **Tap** (T) or type it to override. |
+| Beat stems | Got the track-outs? Select or drag all of them at once (drums, 808, keys…). Each stem gets its own lane, fader, pan, mute and solo, and a **role** (Full beat / Drums / 808 / Bass / Melody / FX) guessed from the file name: check it in the lane's drop-down. |
 | Tracks | **+ Track** → Lead / Double / Ad-lib / Hook. Click the red dot to arm (one at a time). |
 | Record | Set **Count-in**, switch **Click** on if you want it (C), press **R**. |
 | Loop record | Drag across the ruler to set a loop and press **L**, then record: every pass becomes a take. |
@@ -80,7 +95,7 @@ New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language 
 - **Clean:** de-click, hum notches, noise reduction, breath keep/reduce/remove, plosive pop filter, gap gating (all set per track in the Clean tab).
 - **Tone:** low cut from your pitch, EQ matched to a target vocal curve, dynamic de-esser (harder on doubles).
 - **Dynamics:** vocal rider automation, compression, parallel grit in rap mode, phone FX.
-- **Space:** role-based level balance, the beat carved under the vocal only while it plays, tempo-synced delay with throws on phrase endings, plate/room with ducking, Haas widening.
+- **Space:** role-based level balance, beat stems handled by role (drums keep punch, 808 mono, melody carved and ducked) only while the vocal plays, tempo-synced delay with throws on phrase endings, plate/room with ducking, Haas widening.
 - **Master:** tone tilt, stereo width, bus glue, loudness to target (−14 streaming, −9 club, −16 VO, −23 broadcast), look-ahead limiter iterated until true peak is at or below the ceiling you pick (default −1 dBTP, 4× oversampled).
 
 The **Engine** tab logs every decision with its numbers, plus what the engine has learned about your voice. `docs/SPEC-v2.md` maps every standard DAW feature to what is built.

@@ -508,10 +508,12 @@ function activityEnvelope(buffer) {
 }
 
 /**
- * Build the full mix. `vocals` = [{ track, processed }], `beat` = AudioBuffer|null.
+ * Build the full mix. `vocals` = [{ track, processed }], `beats` = [{ id, name, kind, buffer, offset, volumeDb, pan }]
+ * (one full beat, or separate stems: drums / bass / melody / fx).
  * `opts.only` renders a single stem; `opts.raw` skips mastering.
  */
-export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, length, only = null }) {
+const STEM_LABEL = { full: "Beat", drums: "Drums", bass: "808/Bass", melody: "Melody", fx: "FX" };
+export async function renderMix({ vocals, beats = [], fs, mode, settings, length, only = null }) {
   const preset = MODES[mode];
   const stages = { space: true, master: true, ...(settings.stages || {}) };
   const balance = settings.balance ?? 0; // + = vocal louder vs beat
@@ -635,46 +637,95 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
   }
   if (throws) notes.push(`Delay throws: ${throws} phrase endings sent to the delay (+11 dB)`);
 
-  // Beat: level-match, unmask, duck -------------------------------------
-  if (beat && !(beatTrack?.mute) && (!only || only === "beat")) {
-    const bL = beat.getChannelData(0);
-    const bR = beat.numberOfChannels > 1 ? beat.getChannelData(1) : bL;
-    const beatLufs = integratedLoudness([bL, bR], fs);
-    const ref = leadLufs.length ? Math.max(...leadLufs) : preset.vocalLufs;
-    const beatGainDb = clamp(ref + preset.beatOffsetLu - balance - beatLufs + (beatTrack?.volumeDb || 0), -60, 20);
-
-    // Masking: where does the beat crowd the vocal's presence band most?
-    const beatBands = bandSpectrum(bL, fs, null, 8192).bands;
-    let carveF = 2500;
-    let worst = -Infinity;
-    for (const fc of [1000, 2000, 3200]) {
-      const crowd = beatBands[fc] - beatBands[500];
-      if (crowd > worst) {
-        worst = crowd;
-        carveF = fc === 1000 ? 1400 : fc === 2000 ? 2400 : 3400;
+  // Beat stems: level-match as one bus, then treat each by its role ---------
+  // How each role sits under the vocal: carve = presence dip depth, duck = level dip, mono = fold to centre.
+  const ROLE = {
+    full: { carve: 1, duck: 1, note: "carved + ducked only while the vocal speaks" },
+    melody: { carve: 1.2, duck: 1.2, note: "carved + ducked a little deeper while the vocal speaks (it fights the voice most)" },
+    fx: { carve: 1, duck: 1.5, note: "ducked hardest while the vocal speaks" },
+    drums: { carve: 0.35, duck: 0, note: "light carve, never ducked (keeps the punch)" },
+    bass: { carve: 0, duck: 0, mono: true, note: "mono, centred, 25 Hz rumble cut, never ducked" },
+  };
+  const live = beats.filter((b) => b.buffer && !b.mute);
+  if (live.length) {
+    // Loudness of all stems together, as the producer balanced them.
+    const sumL = new Float32Array(length), sumR = new Float32Array(length);
+    for (const b of live) {
+      const g = dbToLin(b.volumeDb || 0);
+      const L = b.buffer.getChannelData(0), R = b.buffer.numberOfChannels > 1 ? b.buffer.getChannelData(1) : L;
+      const o = Math.round((b.offset || 0) * fs);
+      for (let i = 0; i < L.length && i + o < length; i++) {
+        if (i + o < 0) continue;
+        sumL[i + o] += L[i] * g;
+        sumR[i + o] += R[i] * g;
       }
     }
-    const carveDb = clamp(2 + (worst + 8) * 0.25, 1.5, 5);
-
-    const src = ctx.createBufferSource();
-    src.buffer = beat;
-    const g = ctx.createGain();
-    g.gain.value = dbToLin(beatGainDb);
-    const carve = ctx.createBiquadFilter();
-    carve.type = "peaking";
-    carve.frequency.value = carveF;
-    carve.Q.value = 1.1;
-    const duck = ctx.createGain();
+    const beatLufs = integratedLoudness([sumL, sumR], fs);
+    const ref = leadLufs.length ? Math.max(...leadLufs) : preset.vocalLufs;
+    const busDb = clamp(ref + preset.beatOffsetLu - balance - beatLufs, -60, 20);
     const dur = length / fs;
-    if (activity.length > 1) {
-      carve.gain.setValueCurveAtTime(activity.map((a) => -carveDb * a), 0, dur);
-      duck.gain.setValueCurveAtTime(activity.map((a) => dbToLin(-preset.duckDb * a)), 0, dur);
+    const lines = [];
+    for (const b of live) {
+      if (only && only !== b.id) continue;
+      const role = ROLE[b.kind] || ROLE.full;
+      const L = b.buffer.getChannelData(0);
+      const src = ctx.createBufferSource();
+      src.buffer = b.buffer;
+      const g = ctx.createGain();
+      g.gain.value = dbToLin(clamp(busDb + (b.volumeDb || 0), -60, 20));
+      let head = src;
+      if (role.mono && b.buffer.numberOfChannels > 1) {
+        const m = ctx.createGain();
+        m.channelCount = 1;
+        m.channelCountMode = "explicit";
+        m.channelInterpretation = "speakers";
+        head = head.connect(m);
+      }
+      if (b.kind === "bass") {
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass";
+        hp.frequency.value = 25;
+        hp.Q.value = 0.7;
+        head = head.connect(hp);
+      }
+      head = head.connect(g);
+      let carveTxt = "";
+      if (role.carve > 0) {
+        // Masking: where does this stem crowd the vocal's presence band most?
+        const bands = bandSpectrum(L, fs, null, 8192).bands;
+        let carveF = 2500;
+        let worst = -Infinity;
+        for (const fc of [1000, 2000, 3200]) {
+          const crowd = bands[fc] - bands[500];
+          if (crowd > worst) {
+            worst = crowd;
+            carveF = fc === 1000 ? 1400 : fc === 2000 ? 2400 : 3400;
+          }
+        }
+        const carveDb = clamp(2 + (worst + 8) * 0.25, 1.5, 5) * role.carve;
+        const carve = ctx.createBiquadFilter();
+        carve.type = "peaking";
+        carve.frequency.value = carveF;
+        carve.Q.value = 1.1;
+        if (activity.length > 1) carve.gain.setValueCurveAtTime(activity.map((a) => -carveDb * a), 0, dur);
+        head = head.connect(carve);
+        carveTxt = `dips −${carveDb.toFixed(1)} dB @ ${(carveF / 1000).toFixed(1)} kHz`;
+      }
+      if (role.duck > 0 && activity.length > 1) {
+        const duck = ctx.createGain();
+        duck.gain.setValueCurveAtTime(activity.map((a) => dbToLin(-preset.duckDb * role.duck * a)), 0, dur);
+        head = head.connect(duck);
+      }
+      const pan = ctx.createStereoPanner();
+      pan.pan.value = role.mono ? 0 : clamp(b.pan || 0, -1, 1);
+      head.connect(pan).connect(bus);
+      src.start(b.offset || 0);
+      const what = beats.length > 1 || b.kind !== "full" ? `${STEM_LABEL[b.kind] || "Beat"} "${b.name}"` : "Beat";
+      lines.push(`${what}: ${role.note}${carveTxt ? ` · ${carveTxt}` : ""}${role.duck > 0 ? ` · duck ${(preset.duckDb * role.duck).toFixed(1)} dB` : ""}`);
     }
-    src.connect(g).connect(carve).connect(duck).connect(bus);
-    src.start(beatTrack?.offset || 0);
     notes.unshift(
-      `Beat: ${beatLufs.toFixed(1)} LUFS → ${(beatLufs + beatGainDb).toFixed(1)} (${preset.beatOffsetLu - balance >= 0 ? "+" : ""}${(preset.beatOffsetLu - balance).toFixed(1)} LU vs lead)`,
-      `Unmasking: beat dips −${carveDb.toFixed(1)} dB @ ${(carveF / 1000).toFixed(1)} kHz + ${preset.duckDb} dB duck, only while the vocal speaks`,
+      `${live.length > 1 ? `Beat bus (${live.length} stems)` : "Beat"}: ${beatLufs.toFixed(1)} LUFS → ${(beatLufs + busDb).toFixed(1)} (${preset.beatOffsetLu - balance >= 0 ? "+" : ""}${(preset.beatOffsetLu - balance).toFixed(1)} LU vs lead); stem balance kept as the producer made it`,
+      ...lines,
     );
   }
 

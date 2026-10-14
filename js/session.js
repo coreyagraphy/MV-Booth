@@ -22,8 +22,41 @@ export function newSession(name = "Untitled session") {
     id: uid(), name, created: now, updated: now, mode: "rap",
     settings: structuredClone(DEFAULT_SETTINGS),
     lyrics: "", markers: [], loop: { on: false, start: 0, end: 8 }, punch: { on: false, in: 0, out: 0 },
-    master: { volumeDb: 0 }, beat: null, tracks: [],
+    master: { volumeDb: 0 }, beats: [], tracks: [],
   };
+}
+
+// ---------------------------------------------------------------- beat stems
+/** Beat stem roles. The role decides how Automix treats the stem under the vocal. */
+export const STEM_KINDS = {
+  full: { label: "Full beat", color: "#ff7a1a" },
+  drums: { label: "Drums", color: "#ffb03a" },
+  bass: { label: "808 / Bass", color: "#ff4f2e" },
+  melody: { label: "Melody", color: "#ff9466" },
+  fx: { label: "FX / Other", color: "#d98a5f" },
+};
+// Whole words only; "_", "-" and digits count as separators (stem files are named "02_Kick-Loop").
+const W = (words) => new RegExp(`(?<![a-z])(?:${words})(?![a-z])`, "i");
+const STEM_WORDS = [
+  ["bass", W("808s?|bass|sub|subs|low ?end")],
+  ["drums", W("drums?|kicks?|snares?|claps?|hats?|hi ?hats?|hh|oh|perc|percussion|rims?|cymbals?|crash|ride|toms?|shakers?|drum ?loop")],
+  ["fx", W("fx|sfx|risers?|impacts?|sweeps?|vox|chants?|transitions?|noise|ambience")],
+  ["melody", W("melody|melodies|melodic|keys|piano|synths?|pads?|guitars?|gtr|strings?|leads?|chords?|bells?|plucks?|flutes?|horns?|brass|organ|samples?|arps?|loop")],
+  ["full", W("beat|instrumental|inst|2 ?track|stereo ?mix|full ?mix|full|master")],
+];
+/** Guess a stem's role from its file name; null when the name says nothing. */
+export function guessStemKind(name) {
+  for (const [k, re] of STEM_WORDS) if (re.test(name)) return k;
+  return null;
+}
+export function newBeat(id, name, kind = "full") {
+  return { id, name, kind: STEM_KINDS[kind] ? kind : "full", volumeDb: 0, pan: 0, mute: false, solo: false, offset: 0 };
+}
+/** Sessions before 2.5 had one `beat`; it becomes the first stem. */
+export function migrateBeats(s) {
+  if (!Array.isArray(s.beats)) s.beats = s.beat ? [{ ...newBeat(s.beat.id, s.beat.name), ...s.beat, kind: "full" }] : [];
+  delete s.beat;
+  return s;
 }
 
 export function newTrack(session, type = "lead") {
@@ -180,7 +213,8 @@ async function purgeSession(id) {
   const s = await store.get(`session:${id}`);
   if (s) {
     for (const t of s.tracks) for (const tk of t.takes) await store.del(`audio:${tk.id}`);
-    if (s.beat) await store.del(`audio:${s.beat.id}`);
+    migrateBeats(s);
+    for (const b of s.beats) await store.del(`audio:${b.id}`);
   }
   await store.del(`session:${id}`);
 }
@@ -206,7 +240,7 @@ export async function loadSession(id) {
     studio: { ...DEFAULT_SETTINGS.studio, ...(s.settings?.studio || {}) },
   };
   s.punch ??= { on: false, in: 0, out: 0 };
-  return s;
+  return migrateBeats(s);
 }
 
 export async function trashSession(id, deleted = true) {
@@ -233,7 +267,7 @@ export async function migrateLegacy() {
   s.mode = p.mode || "rap";
   s.settings = { ...s.settings, ...(p.settings || {}) };
   s.lyrics = p.lyrics || "";
-  if (p.beat) s.beat = { id: p.beat.id, name: p.beat.name, volumeDb: 0, mute: !!p.beat.mute, offset: p.beat.offset || 0 };
+  if (p.beat) s.beats.push({ ...newBeat(p.beat.id, p.beat.name), mute: !!p.beat.mute, offset: p.beat.offset || 0 });
   for (const old of p.tracks || []) {
     const rec = await store.get(`audio:${old.id}`);
     if (!rec) continue;

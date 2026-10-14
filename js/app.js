@@ -86,11 +86,11 @@ const status = (msg) => ($("status").textContent = msg);
 const bpm = () => S_().bpm || 0;
 const trackById = (id) => session.tracks.find((t) => t.id === id);
 const takeOf = (track, id) => track.takes.find((k) => k.id === id);
-const anySolo = () => session.tracks.some((t) => t.solo);
+const anySolo = () => session.tracks.some((t) => t.solo) || session.beats.some((b) => b.solo);
 const audible = (t) => !t.mute && (!anySolo() || t.solo);
 function projectEnd() {
   const ends = session.tracks.map(S.trackEnd);
-  if (session.beat && audio.get(session.beat.id)) ends.push((session.beat.offset || 0) + audio.get(session.beat.id).duration);
+  for (const b of session.beats) if (audio.get(b.id)) ends.push((b.offset || 0) + audio.get(b.id).duration);
   if (ui.master) ends.push(ui.master.duration - 2);
   return Math.max(0, ...ends);
 }
@@ -408,12 +408,17 @@ function buildLive() {
     p.connect(ds).connect(dlyIn);
     tracks.set(t.id, { g, p, m, rs, ds });
   }
-  const beatG = ctx.createGain();
-  const beatM = ctx.createAnalyser();
-  beatM.fftSize = 512;
-  beatG.connect(beatM);
-  beatG.connect(rawBus);
-  live = { verb, dly, tracks, beatG, beatM, nodes: [verb, verbIn, dly, fb, dlp, dlyIn, beatG] };
+  const beats = new Map();
+  for (const b of session.beats) {
+    const g = ctx.createGain();
+    const p = ctx.createStereoPanner();
+    const m = ctx.createAnalyser();
+    m.fftSize = 512;
+    g.connect(p).connect(m);
+    p.connect(rawBus);
+    beats.set(b.id, { g, p, m });
+  }
+  live = { verb, dly, tracks, beats, nodes: [verb, verbIn, dly, fb, dlp, dlyIn] };
   applyMixer();
 }
 function applyMixer() {
@@ -428,12 +433,17 @@ function applyMixer() {
     n.rs.gain.value = dbToLin(-20) * (t.revSend ?? 1) * sp;
     n.ds.gain.value = dbToLin(-24) * (t.dlySend ?? 1) * sp;
   }
-  if (session.beat) live.beatG.gain.setTargetAtTime(session.beat.mute ? 0 : dbToLin(session.beat.volumeDb || 0), ctx.currentTime, 0.01);
+  for (const b of session.beats) {
+    const n = live.beats.get(b.id);
+    if (!n) continue;
+    n.g.gain.setTargetAtTime(audible(b) ? dbToLin(b.volumeDb || 0) : 0, ctx.currentTime, 0.01);
+    n.p.pan.setTargetAtTime(b.kind === "bass" ? 0 : b.pan || 0, ctx.currentTime, 0.01);
+  }
   masterGain.gain.setTargetAtTime(dbToLin(session.master.volumeDb || 0), ctx.currentTime, 0.01);
 }
 function teardownLive() {
   if (!live) return;
-  for (const n of [...live.nodes, ...[...live.tracks.values()].flatMap((x) => [x.g, x.p, x.m, x.rs, x.ds])]) n.disconnect();
+  for (const n of [...live.nodes, ...[...live.tracks.values()].flatMap((x) => [x.g, x.p, x.m, x.rs, x.ds]), ...[...live.beats.values()].flatMap((x) => [x.g, x.p, x.m])]) n.disconnect();
   live = null;
 }
 
@@ -460,7 +470,10 @@ function scheduleSegment(a, b, T, sources, { cue }) {
     add(ui.master, 0, mixBus);
     return;
   }
-  if (session.beat && audio.get(session.beat.id)) add(audio.get(session.beat.id), session.beat.offset || 0, live.beatG);
+  for (const b of session.beats) {
+    const n = live.beats.get(b.id);
+    if (n && audio.get(b.id)) add(audio.get(b.id), b.offset || 0, n.g);
+  }
   for (const t of session.tracks) {
     const n = live.tracks.get(t.id);
     if (!n) continue;
@@ -703,8 +716,10 @@ function startMeters() {
         const el = document.querySelector(`.strip[data-id="${id}"] .smeter b`);
         if (el) el.style.height = pct(peakOf(n.m));
       }
-      const be = document.querySelector('.strip[data-id="beat"] .smeter b');
-      if (be) be.style.height = pct(peakOf(live.beatM));
+      for (const [id, n] of live.beats) {
+        const el = document.querySelector(`.strip[data-id="${id}"] .smeter b`);
+        if (el) el.style.height = pct(peakOf(n.m));
+      }
       const me = document.querySelector('.strip[data-id="master"] .smeter b');
       if (me) me.style.height = pct(Math.max(l, r));
     }
@@ -898,25 +913,44 @@ function finishPunch(rec, text) {
 async function decodeFile(file) {
   return ctx.decodeAudioData(await file.arrayBuffer());
 }
-async function importBeat(file) {
-  try {
-    status(`Decoding ${file.name}…`);
-    const buffer = await decodeFile(file);
-    const id = S.uid();
-    audio.set(id, buffer);
-    saveAudio(id, buffer);
-    const detected = estimateBpm(buffer.getChannelData(0), FS);
-    edit("Import beat", () => {
-      session.beat = { id, name: file.name.replace(/\.[^.]+$/, ""), volumeDb: 0, mute: false, offset: 0 };
-      if (!S_().bpm) S_().bpm = detected;
-    });
-    $("bpm").value = S_().bpm;
-    if (ui.view.fit) fitView();
-    status(`Beat loaded · ${detected || "?"} BPM detected.`);
-  } catch (err) {
-    toast(`Couldn't read that file: ${err.message}`);
+/**
+ * Import one or more beat files. One file with no stem name = the full beat; several files
+ * (or names like "Kick", "808", "Keys") = stems, each with its own lane, fader, mute and solo.
+ */
+async function importBeats(files) {
+  files = [...files];
+  if (!files.length) return;
+  const added = [];
+  for (const file of files) {
+    try {
+      status(`Decoding ${file.name}…`);
+      const buffer = await decodeFile(file);
+      const id = S.uid();
+      audio.set(id, buffer);
+      saveAudio(id, buffer);
+      const name = file.name.replace(/\.[^.]+$/, "");
+      const kind = S.guessStemKind(name) || (files.length === 1 && !session.beats.length ? "full" : "melody");
+      added.push(S.newBeat(id, name, kind));
+    } catch (err) {
+      toast(`Couldn't read ${file.name}: ${err.message}`);
+    }
   }
+  if (!added.length) return;
+  // Tempo from the drums if there are any: they carry the clearest pulse.
+  const pulse = added.find((b) => b.kind === "drums") || added.find((b) => b.kind === "full") || added[0];
+  const detected = S_().bpm ? 0 : estimateBpm(audio.get(pulse.id).getChannelData(0), FS);
+  edit(added.length > 1 ? `Import ${added.length} stems` : "Import beat", () => {
+    session.beats.push(...added);
+    if (!S_().bpm && detected) S_().bpm = detected;
+  });
+  $("bpm").value = S_().bpm;
+  if (ui.view.fit) fitView();
+  const kinds = added.map((b) => S.STEM_KINDS[b.kind].label).join(", ");
+  status(added.length > 1 || added[0].kind !== "full"
+    ? `${added.length} stem(s) loaded: ${kinds}. Check each lane's role (drop-down) so Automix treats it right.${detected ? ` ${detected} BPM detected.` : ""}`
+    : `Beat loaded · ${detected || S_().bpm || "?"} BPM${detected ? " detected" : ""}.`);
 }
+const importBeat = (file) => importBeats([file]);
 async function importVocal(file, type) {
   try {
     status(`Decoding ${file.name}…`);
@@ -977,14 +1011,14 @@ function engineInputs() {
     const preCleaned = t.clips.every((c) => takeOf(t, c.takeId)?.cleaned);
     tracks.push({ id: t.id, name: t.name, role: t.type, buffer, offset: r.offset, pan: t.pan, fx: t.fx, tune: t.tune && !studioTuned, dbl: t.dbl, clean: preCleaned ? NO_CLEAN : cleanOf(t), trimDb: t.volumeDb, revSend: t.revSend, dlySend: t.dlySend, mute: false });
   }
-  const b = session.beat && audio.get(session.beat.id) ? { ...session.beat, buffer: audio.get(session.beat.id) } : null;
-  return { tracks, beat: b && !b.mute ? b : null };
+  const beats = session.beats.filter((b) => audible(b) && audio.get(b.id)).map((b) => ({ ...b, buffer: audio.get(b.id) }));
+  return { tracks, beats };
 }
 
 async function automix() {
   if (ui.busy) return;
   if (ui.recording) await finishRecording();
-  const { tracks, beat } = engineInputs();
+  const { tracks, beats } = engineInputs();
   if (!tracks.length) return toast("Record or import a vocal first (and make sure it isn't muted).");
   stopPlayback(false);
   ui.busy = true;
@@ -996,12 +1030,12 @@ async function automix() {
   const t0 = performance.now();
   let active = null;
   try {
-    if (beat && !S_().bpm) {
-      S_().bpm = estimateBpm(beat.buffer.getChannelData(0), FS);
+    if (beats.length && !S_().bpm) {
+      S_().bpm = estimateBpm((beats.find((b) => b.kind === "drums") || beats[0]).buffer.getChannelData(0), FS);
       $("bpm").value = S_().bpm;
     }
     const run = await runEngine({
-      tracks, beat, fs: FS, mode: session.mode, settings: { ...S_(), masterDb: session.master.volumeDb }, profile: ui.profile, signal: ui.cancel,
+      tracks, beats, fs: FS, mode: session.mode, settings: { ...S_(), masterDb: session.master.volumeDb }, profile: ui.profile, signal: ui.cancel,
       onStage: (k, p, msg, state) => {
         active = k;
         const idx = STAGES.findIndex(([x]) => x === k);
@@ -1126,7 +1160,7 @@ function songSteps() {
   const vocals = session.tracks.filter((t) => t.takes.length);
   const anyTake = (f) => session.tracks.some((t) => t.takes.some(f));
   return [
-    { t: "Beat", d: "Import your instrumental. Tempo is detected so bars, click and echo line up.", done: !!session.beat, acts: [["Import beat", () => $("fileBeat").click()]] },
+    { t: "Beat", d: "Import your instrumental: one file, or the stems (drums, 808, melody…) selected together. Tempo is detected so bars, click and echo line up.", done: session.beats.length > 0, acts: [["Import beat / stems", () => $("fileBeat").click()]] },
     { t: "Song sections", d: "Mark where the intro, verses and hooks start (moves the playhead there first).", opt: true, done: session.markers.length >= 2,
       acts: ["Intro", "Verse", "Hook", "Bridge", "Outro"].map((n) => [n, () => addMarker(n)]) },
     { t: "Record vocals", d: "Add a Lead track, arm it, press R. Use loop record for several passes, punch-in to fix a line.", done: vocals.length > 0,
@@ -1295,11 +1329,12 @@ async function exportAs(kind) {
     download(blob, `${base}.mp3`);
     status("MP3 exported (320 kbps).");
   } else if (kind === "stems") {
-    const ids = [...ui.run.mixInput.map((v) => v.track.id), ...(session.beat && !session.beat.mute ? ["beat"] : [])];
+    const { beats } = engineInputs();
+    const ids = [...ui.run.mixInput.map((v) => v.track.id), ...beats.map((b) => b.id)];
     for (const [i, id] of ids.entries()) {
       status(`Rendering stem ${i + 1}/${ids.length}…`);
-      const { buffer } = await renderStem(ui.run, { beat: engineInputs().beat, fs: FS, mode: session.mode, settings: S_() }, id);
-      const name = id === "beat" ? session.beat.name : ui.run.mixInput.find((v) => v.track.id === id).track.name;
+      const { buffer } = await renderStem(ui.run, { beats, fs: FS, mode: session.mode, settings: S_() }, id);
+      const name = beats.find((b) => b.id === id)?.name || ui.run.mixInput.find((v) => v.track.id === id).track.name;
       download(encodeWav(await resample(buffer, rate)), `${base}_stem_${String(i + 1).padStart(2, "0")}_${safe(name)}.wav`);
     }
     status("Stems exported (pre-master: they sum to the mix before the limiter).");
@@ -1608,25 +1643,32 @@ function beatHead(b) {
   top.className = "top";
   const name = Object.assign(document.createElement("input"), { className: "name", value: b.name });
   name.onchange = () => edit("Rename beat", () => (b.name = name.value || b.name), { audioChange: false });
-  top.append(name, tog("✕", "x", "Remove beat", false, () => {
-    if (!confirm(`Remove the beat "${b.name}"? (Undo with Ctrl+Z)`)) return;
+  top.append(name, tog("✕", "x", "Remove this beat stem", false, () => {
+    if (!confirm(`Remove "${b.name}"? (Undo with Ctrl+Z)`)) return;
     stopPlayback();
-    edit("Remove beat", () => (session.beat = null));
+    edit("Remove beat stem", () => (session.beats = session.beats.filter((x) => x.id !== b.id)));
   }));
   const row = document.createElement("div");
   row.className = "row";
+  const kind = sel(Object.entries(S.STEM_KINDS).map(([k, v]) => [k, v.label]), b.kind, (v) => {
+    edit("Stem role", () => (b.kind = v));
+    applyMixer();
+  });
+  kind.title = "Stem role: decides how Automix treats it. Drums keep their punch, 808/bass stays mono and centred, melody and FX make room for the vocal.";
+  kind.className = "kind";
   row.append(
-    Object.assign(document.createElement("span"), { className: "badge", textContent: `Beat · ${bpm() || "?"} BPM` }),
+    kind,
     tog("M", "m", "Mute", b.mute, () => edit("Mute beat", () => (b.mute = !b.mute)) || applyMixer()),
+    tog("S", "s", "Solo: hear only soloed lanes", b.solo, () => edit("Solo beat", () => (b.solo = !b.solo)) || applyMixer()),
   );
   head.append(top, row, volRow(b.volumeDb || 0, (v) => {
-    history.push(session, "Beat volume", "vol:beat");
+    history.push(session, `${b.name} volume`, `vol:${b.id}`);
     b.volumeDb = v;
     markStale();
     save();
     applyMixer();
     updateUndo();
-  }, "Beat volume"));
+  }, `${b.name} volume`));
   return head;
 }
 
@@ -1634,16 +1676,17 @@ function renderLanes() {
   const lanes = $("lanes");
   lanes.innerHTML = "";
   const proc = ui.ab === "B" && !ui.stale ? ui.run?.processed : null;
-  if (session.beat) {
-    const lane = laneEl("beat", "#ff7a1a");
+  for (const b of session.beats) {
+    const col = S.STEM_KINDS[b.kind]?.color || "#ff7a1a";
+    const lane = laneEl(`beat${session.beats.length > 1 ? " stem" : ""}${audible(b) ? "" : " muted"}`, col);
     const c = document.createElement("canvas");
     c._draw = (g, w, h) => {
       drawGrid(g, w, h);
-      const buf = audio.get(session.beat.id);
-      if (buf) drawWave(g, buf, session.beat.id, session.beat.offset || 0, session.beat.offset || 0, (session.beat.offset || 0) + buf.duration, 8, h - 16, "rgba(255,150,70,0.8)", "#ff7a1a");
+      const buf = audio.get(b.id);
+      if (buf) drawWave(g, buf, b.id, b.offset || 0, b.offset || 0, (b.offset || 0) + buf.duration, 8, h - 16, `${col}cc`, col);
     };
     c.onpointerdown = (e) => laneSeek(e, c);
-    lane.append(beatHead(session.beat), c);
+    lane.append(beatHead(b), c);
     lanes.append(lane);
   }
   for (const t of session.tracks) {
@@ -1700,7 +1743,7 @@ function renderLanes() {
       }
     }
   }
-  $("emptyHint").hidden = !!(session.beat || session.tracks.length);
+  $("emptyHint").hidden = !!(session.beats.length || session.tracks.length);
   renderLanesOnly();
 }
 function renderLanesOnly() {
@@ -1989,9 +2032,20 @@ function renderStrips() {
         s.append(row);
       });
   }
-  if (session.beat) {
-    const b = session.beat;
-    strip("beat", b.name, "#ff7a1a", b.volumeDb || 0, 0, (v) => coalesce("Beat volume", "vol:beat", () => (b.volumeDb = v)), null);
+  for (const b of session.beats) {
+    strip(b.id, b.name, S.STEM_KINDS[b.kind]?.color || "#ff7a1a", b.volumeDb || 0, b.pan || 0,
+      (v) => coalesce(`${b.name} volume`, `vol:${b.id}`, () => (b.volumeDb = v)),
+      b.kind === "bass" ? null : (v) => coalesce(`${b.name} pan`, `pan:${b.id}`, () => (b.pan = v)),
+      (s) => {
+        s.append(Object.assign(document.createElement("label"), { textContent: S.STEM_KINDS[b.kind]?.label || "Beat", title: "Stem role (change it on the lane)" }));
+        const row = document.createElement("div");
+        row.className = "row";
+        row.append(
+          tog("M", "m", "Mute this stem", b.mute, () => edit("Mute", () => (b.mute = !b.mute)) || applyMixer()),
+          tog("S", "s", "Solo: hear only soloed lanes", b.solo, () => edit("Solo", () => (b.solo = !b.solo)) || applyMixer()),
+        );
+        s.append(row);
+      });
   }
   strip("master", "Master", "#ff7a1a", session.master.volumeDb || 0, 0, (v) => coalesce("Master volume", "vol:master", () => (session.master.volumeDb = v)), null, (s) => {
     s.append(Object.assign(document.createElement("label"), { textContent: "Limiter −1 dB", title: "Live safety limiter; exports are mastered to the loudness target with a true-peak limiter" }));
@@ -2357,7 +2411,7 @@ async function switchTo(s) {
   status(`Opened "${s.name}".`);
 }
 async function loadSessionAudio() {
-  if (session.beat) await loadAudio(session.beat.id);
+  for (const b of session.beats) await loadAudio(b.id);
   for (const t of session.tracks) for (const k of t.takes) await loadAudio(k.id);
 }
 
@@ -2662,9 +2716,9 @@ function bindControls() {
   $("btnImportBeat").onclick = () => $("fileBeat").click();
   $("btnImportVocal").onclick = () => $("fileVocal").click();
   $("fileBeat").onchange = (e) => {
-    const [f] = e.target.files;
+    const files = [...e.target.files];
     e.target.value = "";
-    if (f) importBeat(f);
+    importBeats(files);
   };
   $("fileVocal").onchange = async (e) => {
     const files = [...e.target.files];
@@ -2765,11 +2819,13 @@ function bindControls() {
     e.preventDefault();
     tl.classList.remove("drag");
     const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("audio") || /\.(wav|mp3|m4a|aac|flac|ogg|aif+)$/i.test(f.name));
+    // Onto a beat lane, named like stems, several files on an empty session, or the first file
+    // with no beat yet → beat stems. Anything else → vocals.
     const onBeat = e.target.closest?.(".lane.beat");
-    for (const f of files) {
-      if (!session.beat || onBeat) await importBeat(f);
-      else await importVocal(f);
-    }
+    const named = files.filter((f) => S.guessStemKind(f.name.replace(/\.[^.]+$/, "")));
+    const asBeat = onBeat || (!session.beats.length && !session.tracks.length) ? files : named.length ? named : !session.beats.length ? files.slice(0, 1) : [];
+    await importBeats(asBeat);
+    for (const f of files.filter((x) => !asBeat.includes(x))) await importVocal(f);
   };
 
   // Space is ALWAYS play / pause / pick-up, even right after clicking a button or
@@ -2905,4 +2961,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, automix, importBeat, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { get session() { return session; }, ui, audio, automix, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
