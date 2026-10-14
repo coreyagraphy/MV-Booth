@@ -1,54 +1,56 @@
 # MV Booth
 
-Private vocal booth for voice-overs and rap vocals. You record, it does the engineering. Everything runs in your browser on your own machine: no uploads, no accounts, no subscriptions.
+Mental Vision vocal engine. Record voice-overs and rap vocals; the engine tunes, lines up doubles, generates extra doubles, mixes and masters. Everything runs on your machine: no uploads, no accounts, no subscriptions.
 
-## Run it
+## Install on your PC (one time)
 
-1. Install [Node.js](https://nodejs.org) (any version from 18 up).
-2. **Windows:** double-click `start.bat`. **Mac/Linux:** run `./start.sh`.
-3. The booth opens at `http://localhost:5177`. Use Chrome or Edge.
+1. Install **Node.js LTS** from [nodejs.org](https://nodejs.org/en/download) if you don't have it.
+2. Put the `mv-booth` folder somewhere permanent, e.g. `Documents\mv-booth`. The shortcut points at this folder, so don't move it afterwards.
+3. Double-click **`INSTALL.bat`**. It creates an **MV Booth** shortcut on your Desktop and in the Start menu, with the app icon.
+4. Launch **MV Booth**. It opens as its own app window (Edge or Chrome app mode), with no browser tabs or address bar. Pin it to the taskbar from the Start menu.
 
-Wear headphones while recording, or the beat bleeds into the mic.
+The shortcut starts a tiny local engine silently. It shuts itself down about two minutes after you close the window. `start.bat` is the manual alternative, with a console window.
+
+Wear headphones while recording so the beat doesn't bleed into the mic.
 
 ## Session flow
 
 | Step | What you do | Keys |
 | --- | --- | --- |
-| Beat | Drag an instrumental onto the timeline, or **Import beat**. Tempo is auto-detected. Skip this for a dry voice-over. | |
-| Mic | **Enable mic** and pick your interface. | |
-| Role | Set **Next take is a** to Lead / Double / Ad-lib / Hook stack. | |
-| Record | Each take becomes its own lane, starting from the playhead. Click the ruler or a lane to move the playhead. | `R` |
-| Lyrics | Write in the **Lyrics** tab. The gutter counts syllables per line, and the prompter scrolls them while you record. | |
-| Automix | Mode **Rap** or **Voice-over**, then **Automix**. | |
-| Compare | Switch instantly between raw takes and the mix. | `B` |
-| Export | Master WAV (24-bit), stems, or raw takes. | |
+| Beat | Drag an instrumental onto the timeline, or **Import beat**. Tempo is detected. | |
+| Mic | **Enable mic**, pick your interface. | |
+| Role | **Next take is a** Lead / Double / Ad-lib / Hook stack. | |
+| Record | Each take lands on its own lane at the playhead. | `R` |
+| Lane chips | **TUNE** on/off · **DBL → 2X → 2X+8** AI doubles (leads) · FX Clean / Phone / Wide · M / S | |
+| Tune tab | Correction Off / Natural / Tight / Hard, key (auto or set) and scale, double alignment and tightness, pitch view | |
+| Automix | Runs the 8-stage engine; the dock lights each stage. | |
+| Compare | Instant switch between raw takes and the mix. | `B` |
+| Export | Master WAV (24-bit), stems, raw takes. | |
 
-`Space` plays and stops, and stops a take while recording. `Home` returns to the start.
+`Space` plays and stops (and ends a take). `Home` returns to the start.
 
-## What the engine does (reverse-engineered feature map)
+## The engine
 
-| Source tool | Feature | MV Booth implementation |
-| --- | --- | --- |
-| LUNA 3 / Noiseworks VoiceAssist | Auto volume riding | K-weighted short-term loudness → gain automation (±6 dB rap, ±8 dB VO), drawn on the lane as the orange line |
-| | Sibilance control | Per-frame 4.5–10.5 kHz energy ratio → automated dynamic EQ at the voice's own sibilance centre (red ticks on the lane) |
-| | Breath + noise reduction | Spectral-gating denoiser (noise profile learned from the quietest frames) + breath detection by spectral flatness → −7/−12 dB |
-| Nectar 4 Vocal Assistant | Voice-matched EQ | Measures F0 for the low cut, then compares the long-term spectrum against a target vocal curve and corrects mud/box/presence/air |
-| | Auto Level + compression | Gain-staged to −20 dBFS, threshold set from the take's dynamic range, 4:1 rap / 3:1 VO, parallel saturation for rap grit |
-| RoEx Automix | Level balance | Every lane loudness-matched by role (doubles −7 LU, ad-libs −5, beat −1 LU under the lead) |
-| | Frequency unmasking | Finds where the beat crowds the vocal's presence band and dips it there only while the vocal is active, plus a light duck |
-| | Master | Bus glue → loudness normalisation to target → look-ahead brickwall limiter at −1 dBFS, then measured again |
-| Moises (in LUNA) | Lyric transcription | Optional live transcription per take (Chrome's speech service, so it sends audio to Google; off by default) |
+**Tune → Align → Double → Clean → Tone → Dynamics → Space → Master**
 
-The Engine tab logs every decision with its numbers so you can see why the mix sounds the way it does. **Vocal vs beat**, **Space** and **Loudness target** let you steer it; run Automix again after changing them.
+- **Tune:** YIN pitch tracking, automatic key detection, note snapping with retune speed. PSOLA shifting keeps your formants, so you still sound like you. *Hard* is the robotic effect.
+- **Align:** recorded doubles and hook stacks are time-warped onto the lead (DTW + WSOLA) and pitch-matched to the lead, like VocAlign.
+- **Double:** studio-style AI doubles from the lead: a detuned, drifting L/R pair, plus an optional octave-down layer.
+- **Clean:** noise reduction, breath taming, plosive pop filter, gap gating.
+- **Tone:** low cut from your pitch, EQ matched to a target vocal curve, dynamic de-esser (harder on doubles).
+- **Dynamics:** vocal rider automation, compression, parallel grit in rap mode, phone FX.
+- **Space:** role-based level balance, the beat carved under the vocal only while it plays, tempo-synced delay with throws on phrase endings, plate/room with ducking, Haas widening.
+- **Master:** bus glue, loudness to target (−14 streaming, −10 loud, −16 VO, −23 broadcast), look-ahead limiter at −1 dBFS.
 
-## Latency
+The **Engine** tab logs every decision with its numbers, plus what the engine has learned about your voice.
 
-Takes are shifted automatically by the browser's reported input and output latency. If your vocal still lands late or early against the beat, adjust **Latency trim** in the Booth tab. Positive values pull takes earlier.
+### About "training"
 
-## Storage
+No neural network is downloaded, and nothing leaves your PC. The engine uses the same proven signal-processing methods behind classic pitch-correction and alignment tools (YIN, PSOLA, DTW, WSOLA, BS.1770 loudness). It learns from you: after every mix it saves a profile of your voice (tone, pitch range, sibilance, key) and your preferred settings, and short or noisy takes lean on that profile. See `REA.md` for the reverse-engineering ledger.
 
-Takes, the beat and your lyrics are saved in the browser's local storage (IndexedDB) for `localhost:5177`, so they survive a refresh. Clearing site data deletes them. Export anything you want to keep.
+## Latency, storage, Netlify
 
-## Netlify (optional)
-
-You don't need Netlify; the local version does everything. If you want the booth on other devices, create a Netlify site from this repo with no build command. `netlify.toml` handles the rest, including a `noindex` header. Audio still never leaves the browser.
+- **Latency:** takes are shifted by the reported device latency. If your vocal still lands late or early, nudge **Latency trim** (positive pulls takes earlier).
+- **Storage:** takes, the beat and lyrics live in the app's local storage, so they survive restarts. Export anything you want to keep.
+- **Offline:** after the first launch the app shell is cached and keeps working offline.
+- **Netlify (optional):** deploy this folder as a static site with no build command. It isn't needed for local use.

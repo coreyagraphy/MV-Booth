@@ -4,130 +4,157 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MV Booth</title>
-    <meta name="description" content="Private vocal booth: record voice-overs and rap vocals, then let the engine mix and master them." />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%23090b0e%27/%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%277%27 fill=%27%23ff8a3d%27/%3E%3C/svg%3E" />
+    <meta name="description" content="Mental Vision vocal engine: record, tune, double and auto-mix voice-overs and rap vocals." />
+    <meta name="theme-color" content="#04060a" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;700&display=swap"
-      rel="stylesheet"
-    />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="bar">
-      <div class="brand">MV<span>BOOTH</span></div>
+    <header class="bar glass rise">
+      <div class="brand">
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <defs>
+            <radialGradient id="orb" cx="40%" cy="35%"><stop offset="0" stop-color="#ffd29a" /><stop offset=".55" stop-color="#ff7a1a" /><stop offset="1" stop-color="#b8360a" /></radialGradient>
+          </defs>
+          <circle cx="32" cy="32" r="29" fill="none" stroke="#12e0d0" stroke-width="2" stroke-dasharray="4 5" opacity=".75" />
+          <circle cx="32" cy="32" r="15" fill="url(#orb)" />
+          <path d="M8 32h8M48 32h8" stroke="#12e0d0" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <div><b>MV BOOTH</b><small>VOCAL ENGINE</small></div>
+      </div>
       <div class="seg" id="modeSeg" role="radiogroup" aria-label="Mix mode">
+        <span class="thumb"></span>
         <button data-mode="rap" role="radio">Rap</button>
         <button data-mode="vo" role="radio">Voice-over</button>
       </div>
+
       <div class="transport">
-        <button id="btnReturn" class="icon" title="Return to start (Home)" aria-label="Return to start">
-          <svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
-        </button>
+        <button id="btnReturn" class="icon" title="Return to start (Home)" aria-label="Return to start"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg></button>
         <button id="btnPlay" class="icon" title="Play / stop (Space)" aria-label="Play">
           <svg viewBox="0 0 24 24" class="i-play"><path d="M7 4v16l13-8z" /></svg>
           <svg viewBox="0 0 24 24" class="i-stop"><path d="M6 6h12v12H6z" /></svg>
         </button>
-        <button id="btnRec" class="icon rec" title="Record a take (R)" aria-label="Record">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" /></svg>
-        </button>
+        <button id="btnRec" class="icon rec" title="Record a take (R)" aria-label="Record"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /></svg></button>
         <div class="clock" id="clock">00:00.0</div>
-        <div class="meter" title="Input level"><i id="inMeter"></i></div>
+        <div class="chips"><span class="chip" id="chipBpm">— BPM</span><span class="chip" id="chipKey">Key auto</span></div>
       </div>
-      <div class="seg ab" id="abSeg" aria-label="Compare raw and mixed">
-        <button data-ab="A" title="Hear the raw takes (B key toggles)">Raw</button>
-        <button data-ab="B" title="Hear the engine's mix">Mix</button>
+
+      <div class="seg" id="abSeg" aria-label="Compare raw and mixed">
+        <span class="thumb"></span>
+        <button data-ab="A" title="Raw takes (B toggles)">Raw</button>
+        <button data-ab="B" title="Engine mix (B toggles)">Mix</button>
       </div>
-      <button id="btnAutomix" class="cta">Automix</button>
+      <button id="btnAutomix" class="core">Automix</button>
     </header>
 
     <main>
-      <section class="timeline" id="timeline">
-        <div class="ruler" id="ruler"></div>
-        <div class="lanes" id="lanes"></div>
-        <div class="playhead" id="playhead"></div>
-        <div class="empty" id="emptyHint">
-          <h2>Drop a beat. Hit record.</h2>
-          <p>Drag an instrumental anywhere on this panel, or skip the beat for a dry voice-over. Every take lands as its own lane; <b>Automix</b> does the engineering.</p>
+      <section class="stage glass rise d1">
+        <div class="timeline" id="timeline">
+          <div class="ruler" id="ruler"></div>
+          <div class="lanes" id="lanes"></div>
+          <div class="playhead" id="playhead"></div>
+          <div class="empty" id="emptyHint">
+            <h2>Drop the beat.<br />Step in the booth.</h2>
+            <p>Drag an instrumental anywhere here, or skip it for a dry voice-over. Every take gets its own lane. <b>Automix</b> tunes, aligns, doubles, mixes and masters it.</p>
+          </div>
         </div>
       </section>
 
-      <aside class="side">
-        <nav class="tabs" role="tablist">
-          <button data-tab="booth" class="on">Booth</button>
-          <button data-tab="lyrics">Lyrics</button>
-          <button data-tab="engine">Engine</button>
-        </nav>
-
-        <div class="tab on" data-panel="booth">
-          <label class="field">Microphone
-            <select id="micSelect"><option value="">Default input</option></select>
-          </label>
-          <div class="row">
-            <button id="btnMic" class="ghost">Enable mic</button>
-            <label class="check"><input type="checkbox" id="monitor" /> Monitor</label>
-          </div>
-          <label class="field">Next take is a
-            <select id="nextRole"></select>
-          </label>
-          <div class="row">
-            <button id="btnImportBeat" class="ghost">Import beat</button>
-            <button id="btnImportVocal" class="ghost">Import vocal</button>
-          </div>
-          <input type="file" id="fileBeat" accept="audio/*" hidden />
-          <input type="file" id="fileVocal" accept="audio/*" multiple hidden />
-
-          <h3>Engine controls</h3>
-          <label class="field">Loudness target
-            <select id="target">
-              <option value="-14">Streaming · −14 LUFS</option>
-              <option value="-10">Loud / club · −10 LUFS</option>
-              <option value="-16">Podcast / VO · −16 LUFS</option>
-              <option value="-23">Broadcast · −23 LUFS</option>
-            </select>
-          </label>
-          <label class="field">Vocal vs beat <output id="balanceOut">0 dB</output>
-            <input type="range" id="balance" min="-6" max="6" step="0.5" value="0" />
-          </label>
-          <label class="field">Space (reverb + delay) <output id="spaceOut">100%</output>
-            <input type="range" id="space" min="0" max="2" step="0.05" value="1" />
-          </label>
-          <label class="field">Tempo (BPM, 0 = detect)
-            <input type="number" id="bpm" min="0" max="220" step="1" value="0" />
-          </label>
-
-          <h3>Recording</h3>
-          <label class="field">Latency trim <output id="latencyOut">0 ms</output>
-            <input type="range" id="latency" min="-120" max="120" step="1" value="0" />
-          </label>
-          <label class="check"><input type="checkbox" id="usePrompter" checked /> Show lyric prompter while recording</label>
-          <label class="check"><input type="checkbox" id="transcribe" /> Live transcription <small>(Chrome; audio goes to Google's speech service)</small></label>
+      <aside class="rail">
+        <div class="monitor glass rise d2">
+          <canvas id="spectrum"></canvas>
+          <div class="meters" title="Output L / R and mic input"><i><b id="mL"></b></i><i><b id="mR"></b></i><i><b id="mIn"></b></i></div>
+          <div class="readouts"><span>Out <b id="roLufs">— LUFS</b></span><span>Peak <b id="roPeak">—</b></span><span>Mic <b id="roMic">off</b></span></div>
         </div>
 
-        <div class="tab" data-panel="lyrics">
-          <div class="lyric-wrap">
-            <div class="gutter" id="gutter" aria-hidden="true"></div>
-            <textarea id="lyrics" wrap="off" spellcheck="false" placeholder="Write the verse here. The gutter counts syllables per bar line."></textarea>
-          </div>
-          <div class="row">
-            <button id="btnPrompter" class="ghost">Open prompter</button>
-            <label class="field inline">Scroll <input type="range" id="scrollSpeed" min="0" max="80" step="1" value="18" /></label>
-          </div>
-        </div>
+        <div class="panel glass rise d3">
+          <nav class="tabs" role="tablist">
+            <button data-tab="booth" class="on">Booth</button>
+            <button data-tab="tune">Tune</button>
+            <button data-tab="lyrics">Lyrics</button>
+            <button data-tab="engine">Engine</button>
+          </nav>
 
-        <div class="tab" data-panel="engine">
-          <div id="report" class="report"><p class="muted">Run <b>Automix</b> and the engine logs every decision it makes here.</p></div>
+          <div class="tab on" data-panel="booth">
+            <label class="field"><span>Microphone</span><select id="micSelect"><option value="">Default input</option></select></label>
+            <div class="row">
+              <button id="btnMic" class="btn">Enable mic</button>
+              <label class="check"><input type="checkbox" id="monitor" /> Monitor through headphones</label>
+            </div>
+            <label class="field"><span>Next take is a</span><select id="nextRole"></select></label>
+            <div class="row">
+              <button id="btnImportBeat" class="btn">Import beat</button>
+              <button id="btnImportVocal" class="btn">Import vocal</button>
+            </div>
+            <input type="file" id="fileBeat" accept="audio/*" hidden />
+            <input type="file" id="fileVocal" accept="audio/*" multiple hidden />
+
+            <h3>Mix direction</h3>
+            <label class="field"><span>Loudness target</span>
+              <select id="target">
+                <option value="-14">Streaming · −14 LUFS</option>
+                <option value="-10">Loud / club · −10 LUFS</option>
+                <option value="-16">Podcast / VO · −16 LUFS</option>
+                <option value="-23">Broadcast · −23 LUFS</option>
+              </select>
+            </label>
+            <label class="field"><span>Vocal vs beat <output id="balanceOut">0 dB</output></span><input type="range" id="balance" min="-6" max="6" step="0.5" value="0" /></label>
+            <label class="field"><span>Space · reverb + delay <output id="spaceOut">100%</output></span><input type="range" id="space" min="0" max="2" step="0.05" value="1" /></label>
+            <label class="field"><span>Tempo (0 = detect)</span><input type="number" id="bpm" min="0" max="220" step="1" value="0" /></label>
+
+            <h3>Recording</h3>
+            <label class="field"><span>Latency trim <output id="latencyOut">0 ms</output></span><input type="range" id="latency" min="-120" max="120" step="1" value="0" /></label>
+            <label class="check"><input type="checkbox" id="usePrompter" checked /> Lyric prompter while recording</label>
+            <label class="check"><input type="checkbox" id="transcribe" /> <span>Live transcription <small>Chrome/Edge only; sends audio to the browser's speech service</small></span></label>
+          </div>
+
+          <div class="tab" data-panel="tune">
+            <label class="field"><span>Correction</span>
+              <div class="seg small" id="styleSeg"><span class="thumb"></span>
+                <button data-style="off">Off</button><button data-style="natural">Natural</button><button data-style="tight">Tight</button><button data-style="hard">Hard</button>
+              </div>
+            </label>
+            <div class="pair">
+              <label class="field"><span>Key</span><select id="keySel"></select></label>
+              <label class="field"><span>Scale</span><select id="scaleSel"></select></label>
+            </div>
+            <label class="check"><input type="checkbox" id="alignDoubles" checked /> <span>Line recorded doubles up to the lead <small>Timing (DTW + time-warp) and pitch-match</small></span></label>
+            <label class="field"><span>Alignment tightness <output id="tightOut">90%</output></span><input type="range" id="tight" min="0.3" max="1" step="0.05" value="0.9" /></label>
+            <h3>Pitch view · <span id="pitchLane" class="muted">select a lane</span></h3>
+            <canvas class="pitchgraph" id="pitchGraph"></canvas>
+            <div class="legend"><span><i style="background:#3d8f89"></i>Sung</span><span><i style="background:#ff7a1a"></i>Corrected</span><span><i style="background:rgba(255,255,255,.18)"></i>Scale notes</span></div>
+          </div>
+
+          <div class="tab" data-panel="lyrics">
+            <div class="lyric-wrap">
+              <div class="gutter" id="gutter" aria-hidden="true"></div>
+              <textarea id="lyrics" wrap="off" spellcheck="false" placeholder="Write the verse. The gutter counts syllables per bar."></textarea>
+            </div>
+            <div class="row">
+              <button id="btnPrompter" class="btn">Open prompter</button>
+              <label class="field" style="flex:1"><span>Scroll speed</span><input type="range" id="scrollSpeed" min="0" max="80" step="1" value="18" /></label>
+            </div>
+          </div>
+
+          <div class="tab" data-panel="engine">
+            <div id="report" class="report"><p class="muted">Run <b>Automix</b> and the engine logs every decision it makes, with the numbers.</p></div>
+          </div>
         </div>
       </aside>
     </main>
 
-    <footer class="foot">
-      <div class="status"><span id="status">Ready.</span><div class="progress"><i id="progress"></i></div></div>
+    <footer class="dock glass rise d4">
+      <div class="chain" id="chain"></div>
+      <div class="status" id="status">Ready.</div>
       <div class="exports">
-        <button id="btnExportMix" class="ghost" disabled>Export master WAV</button>
-        <button id="btnExportStems" class="ghost" disabled>Export stems</button>
-        <button id="btnExportRaw" class="ghost">Export raw takes</button>
+        <button id="btnExportMix" class="btn" disabled>Master WAV</button>
+        <button id="btnExportStems" class="btn" disabled>Stems</button>
+        <button id="btnExportRaw" class="btn">Raw takes</button>
       </div>
     </footer>
 
@@ -135,7 +162,7 @@
       <button class="close" id="prompterClose" aria-label="Close prompter">Esc</button>
       <div class="prompter-scroll" id="prompterScroll"><div id="prompterText"></div></div>
     </div>
-    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="toast glass" id="toast" role="status" aria-live="polite"></div>
 
     <script type="module" src="js/app.js"></script>
   </body>

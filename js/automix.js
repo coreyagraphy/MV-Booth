@@ -62,11 +62,14 @@ export const MODES = {
 };
 
 export const ROLES = {
-  lead: { label: "Lead", levelDb: 0, pan: 0, hpBoost: 0, reverbDb: 0, delayDb: 0 },
-  double: { label: "Double", levelDb: -7, pan: 0.38, hpBoost: 60, reverbDb: -4, delayDb: -60 },
-  adlib: { label: "Ad-lib", levelDb: -5, pan: 0.6, hpBoost: 40, reverbDb: 5, delayDb: 6 },
-  hook: { label: "Hook stack", levelDb: -3, pan: 0.25, hpBoost: 20, reverbDb: 2, delayDb: -3 },
+  lead: { label: "Lead", levelDb: 0, pan: 0, hpBoost: 0, reverbDb: 0, delayDb: 0, deessMult: 1 },
+  double: { label: "Double", levelDb: -7, pan: 0.38, hpBoost: 60, reverbDb: -4, delayDb: -60, deessMult: 1.7 },
+  adlib: { label: "Ad-lib", levelDb: -5, pan: 0.6, hpBoost: 40, reverbDb: 5, delayDb: 6, deessMult: 1.2 },
+  hook: { label: "Hook stack", levelDb: -3, pan: 0.25, hpBoost: 20, reverbDb: 2, delayDb: -3, deessMult: 1.3 },
+  octave: { label: "Octave", levelDb: -13, pan: 0, hpBoost: 0, reverbDb: -6, delayDb: -60, deessMult: 2, hidden: true },
 };
+
+export const FX = { clean: "Clean", phone: "Phone", wide: "Wide (Haas)" };
 
 const HOP = 512; // analysis hop (~10.7 ms @ 48 kHz)
 
@@ -88,6 +91,8 @@ export async function analyseVocal(raw, fs, mode, onProgress) {
   const sibDb = new Float32Array(frames);
   const sibRatio = new Float32Array(frames);
   const flat = new Float32Array(frames);
+  const lowRatio = new Float32Array(frames);
+  const kP = Math.max(1, Math.floor((150 * N) / fs));
   const kLo = Math.floor((300 * N) / fs);
   const kHi = Math.floor((8000 * N) / fs);
   const kS0 = Math.floor((4500 * N) / fs);
@@ -106,10 +111,11 @@ export async function analyseVocal(raw, fs, mode, onProgress) {
     }
     rms[f] = 10 * Math.log10(Math.max(tsum / N, 1e-12));
     fft(re, im);
-    let total = 1e-20, sib = 1e-20, logSum = 0, linSum = 0, cnum = 0;
+    let total = 1e-20, sib = 1e-20, logSum = 0, linSum = 0, cnum = 0, low = 1e-20;
     for (let k = 1; k <= N / 2; k++) {
       const p = re[k] * re[k] + im[k] * im[k];
       total += p;
+      if (k <= kP) low += p;
       if (k >= kS0 && k <= kS1) {
         sib += p;
         cnum += p * ((k * fs) / N);
@@ -124,6 +130,7 @@ export async function analyseVocal(raw, fs, mode, onProgress) {
     flat[f] = Math.exp(logSum / count) / (linSum / count);
     sibDb[f] = 10 * Math.log10(sib / N);
     sibRatio[f] = 10 * Math.log10(sib / total);
+    lowRatio[f] = 10 * Math.log10(low / total);
     if (sibRatio[f] > -10) {
       sibCentroidNum += cnum;
       sibCentroidDen += sib;
@@ -180,6 +187,19 @@ export async function analyseVocal(raw, fs, mode, onProgress) {
   const f0Median = f0s.length ? percentile(f0s, 0.5) : 140;
   const f0Low = f0s.length ? percentile(f0s, 0.1) : 100;
 
+  // Plosives: a burst where sub-150 Hz energy dominates right at an onset.
+  const plosive = new Uint8Array(frames);
+  let plosives = 0;
+  for (let f = 3; f < frames; f++) {
+    if (active[f] && lowRatio[f] > -4 && rms[f] - rms[f - 3] > 8) {
+      plosives++;
+      plosive.fill(1, f - 1, Math.min(frames, f + 5));
+      f += 8;
+    }
+  }
+  let activeFrames = 0;
+  for (let f = 0; f < frames; f++) activeFrames += active[f];
+
   const spectrum = bandSpectrum(x, fs, (start) => active[Math.floor(start / HOP)] === 1).bands;
   const sibCentre = sibCentroidDen > 0 ? clamp(sibCentroidNum / sibCentroidDen, 4800, 9500) : 6500;
   onProgress?.(1);
@@ -202,14 +222,22 @@ export async function analyseVocal(raw, fs, mode, onProgress) {
     f0Low,
     spectrum,
     sibCentre,
+    plosive,
+    plosives,
+    activeSec: (activeFrames * HOP) / fs,
   };
 }
 
 // ---------------------------------------------------------------- 2. vocal chain
 
-function decideEq(an, mode, role) {
+function decideEq(an, mode, role, profile) {
   const preset = MODES[mode];
-  const s = an.spectrum;
+  let s = an.spectrum;
+  if (profile?.spectrum) {
+    // Short takes lean on what the engine has learned about this voice.
+    const w = clamp(an.activeSec / 20, 0.25, 1);
+    s = Object.fromEntries(Object.keys(s).map((k) => [k, s[k] * w + (profile.spectrum[k] ?? s[k]) * (1 - w)]));
+  }
   const rel = (fc) => s[fc] - s[1000];
   const corr = (fc, lo, hi, bias = 0) => clamp((preset.eqTarget[fc] - rel(fc)) * 0.6 + bias, lo, hi);
   const hpf = clamp(an.f0Low * 0.72, mode === "vo" ? 60 : 75, 150) + ROLES[role].hpBoost;
@@ -245,7 +273,7 @@ function gainCurve(an, fs, mode) {
   return { curve: shaped, rideMin, rideMax };
 }
 
-function deessCurve(an, mode) {
+function deessCurve(an, mode, mult = 1) {
   const preset = MODES[mode];
   const out = new Float32Array(an.frames);
   let events = 0;
@@ -254,7 +282,7 @@ function deessCurve(an, mode) {
   for (let f = 0; f < an.frames; f++) {
     let cut = 0;
     if (an.active[f] && an.sibDb[f] > an.speechDb - 26) {
-      cut = clamp((an.sibRatio[f] + 11) * 0.9, 0, preset.deessMax);
+      cut = clamp((an.sibRatio[f] + 11) * 0.9 * mult, 0, preset.deessMax * mult);
     }
     if (cut > 1 && !on) events++;
     on = cut > 1;
@@ -291,13 +319,13 @@ function curveToGain(curveDb, extraDb = 0) {
 }
 
 /** Render the processed, panned vocal for one track. */
-export async function renderVocal(track, raw, fs, mode, onProgress) {
+export async function renderVocal(track, raw, fs, mode, onProgress, { profile } = {}) {
   const an = await analyseVocal(raw, fs, mode, (p) => onProgress?.(p * 0.85));
   const preset = MODES[mode];
   const role = ROLES[track.role] ? track.role : "lead";
-  const eq = decideEq(an, mode, role);
+  const eq = decideEq(an, mode, role, profile);
   const ride = gainCurve(an, fs, mode);
-  const ds = deessCurve(an, mode);
+  const ds = deessCurve(an, mode, ROLES[role].deessMult);
   const preGainDb = clamp(-20 - an.activeLevel, -12, 36);
   const threshold = preset.comp.threshold - clamp((an.dynRange - 8) * 0.4, 0, 4);
 
@@ -324,6 +352,8 @@ export async function renderVocal(track, raw, fs, mode, onProgress) {
   };
   biq("highpass", eq.hpf, 0.707);
   biq("highpass", eq.hpf, 0.707);
+  const pop = biq("highpass", 20, 0.8);
+  if (an.plosives) pop.frequency.setValueCurveAtTime(smoothCurve(Float32Array.from(an.plosive, (p) => (p ? 260 : 20)), 0.6, 0.25), 0, dur);
   biq("peaking", 250, 1.0, eq.mud);
   biq("peaking", 500, 1.2, eq.box);
   biq("peaking", 3200, 0.9, eq.presence);
@@ -361,7 +391,25 @@ export async function renderVocal(track, raw, fs, mode, onProgress) {
     wet.gain.value = preset.grit / 4;
     comp.connect(drive).connect(shaper).connect(wet).connect(pan);
   }
-  pan.connect(ctx.destination);
+  if (track.fx === "phone") {
+    // Lo-fi phone/megaphone: band-limit and drive, no dry signal.
+    pan.disconnect();
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 480;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 3100;
+    const sh = ctx.createWaveShaper();
+    sh.curve = Float32Array.from({ length: 1024 }, (_, i) => Math.tanh(5 * ((i / 1023) * 2 - 1)) / Math.tanh(5));
+    const pre = ctx.createGain();
+    pre.gain.value = 3;
+    const post = ctx.createGain();
+    post.gain.value = 0.5;
+    pan.connect(hp).connect(lp).connect(pre).connect(sh).connect(post).connect(ctx.destination);
+  } else {
+    pan.connect(ctx.destination);
+  }
   src.start(0);
   const rendered = await ctx.startRendering();
   onProgress?.(1);
@@ -376,6 +424,7 @@ export async function renderVocal(track, raw, fs, mode, onProgress) {
     rideCurve: ride.curve,
     deess: ds.curve,
     hop: HOP,
+    learned: { spectrum: an.spectrum, f0: an.f0Median, sibCentre: an.sibCentre, seconds: an.activeSec },
     report: [
       an.nr.applied
         ? `Noise reduction: ${an.nr.reductionDb.toFixed(1)} dB avg mask (input SNR ${an.nr.snrDb.toFixed(0)} dB)`
@@ -384,8 +433,10 @@ export async function renderVocal(track, raw, fs, mode, onProgress) {
       `Tone EQ: 250 Hz ${fmt(eq.mud)} · 500 Hz ${fmt(eq.box)} · 3.2 kHz ${fmt(eq.presence)} · air ${fmt(eq.air)}`,
       `De-ess: ${ds.events} events @ ${(an.sibCentre / 1000).toFixed(1)} kHz, deepest ${ds.maxCut.toFixed(1)} dB`,
       `Breaths tamed: ${an.breaths} (${preset.breathDb} dB) · gaps gated ${preset.gateDb} dB`,
+      `Plosives caught: ${an.plosives} (dynamic 260 Hz high-pass on each pop)`,
       `Vocal rider: ${ride.rideMin.toFixed(1)} … +${ride.rideMax.toFixed(1)} dB automation`,
       `Compressor: ${ratio}:1 @ ${threshold.toFixed(1)} dB${preset.grit ? ` + ${Math.round(preset.grit * 100)}% parallel grit` : ""}`,
+      ...(track.fx === "phone" ? ["FX: phone band-pass 480 Hz–3.1 kHz + drive"] : []),
     ],
   };
 }
@@ -431,7 +482,8 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
   verbLp.frequency.value = 7500;
   const conv = ctx.createConvolver();
   conv.buffer = makeImpulse(ctx, preset.reverb.seconds, mode);
-  pre.connect(verbHp).connect(verbLp).connect(conv).connect(bus);
+  const verbReturn = ctx.createGain(); // ducked under the lead so the tail blooms in the gaps
+  pre.connect(verbHp).connect(verbLp).connect(conv).connect(verbReturn).connect(bus);
 
   const bpm = settings.bpm || 0;
   let delayIn = null;
@@ -458,6 +510,7 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
   const leadLufs = [];
   const activity = new Float32Array(Math.ceil(length / HOP));
   let panFlip = 1;
+  let throws = 0;
   for (const { track, processed } of vocals) {
     const role = ROLES[track.role] || ROLES.lead;
     const targetLufs = preset.vocalLufs + role.levelDb + (track.trimDb || 0);
@@ -475,19 +528,58 @@ export async function renderMix({ vocals, beat, beatTrack, fs, mode, settings, l
     src.buffer = processed.buffer;
     const g = ctx.createGain();
     g.gain.value = dbToLin(gainDb);
-    const p = ctx.createStereoPanner();
-    p.pan.value = clamp(panAmt, -1, 1);
-    src.connect(g).connect(p).connect(bus);
+    let p;
+    if (track.fx === "wide") {
+      // Haas widening: same signal, right side 14 ms late.
+      const split = ctx.createChannelSplitter(2);
+      p = ctx.createChannelMerger(2);
+      const haas = ctx.createDelay(0.05);
+      haas.delayTime.value = 0.014;
+      src.connect(g).connect(split);
+      split.connect(p, 0, 0);
+      split.connect(haas, 1).connect(p, 0, 1);
+      p.connect(bus);
+    } else {
+      p = ctx.createStereoPanner();
+      p.pan.value = clamp(panAmt, -1, 1);
+      src.connect(g).connect(p).connect(bus);
+    }
     const rs = ctx.createGain();
     rs.gain.value = dbToLin(preset.reverb.sendDb + role.reverbDb) * space;
     p.connect(rs).connect(pre);
     if (delayIn && role.delayDb > -40) {
       const ds = ctx.createGain();
-      ds.gain.value = dbToLin(preset.delay.sendDb + role.delayDb) * space;
+      const base = dbToLin(preset.delay.sendDb + role.delayDb) * space;
+      ds.gain.value = base;
+      if (track.role === "lead" && mode === "rap") {
+        // Delay throws: open the send on the last word of each phrase.
+        const env = activityEnvelope(processed.buffer);
+        const curve = new Float32Array(env.length).fill(base);
+        const fps = fs / HOP;
+        let run = 0;
+        for (let i = 1; i < env.length; i++) {
+          if (env[i] >= 0.5) run++;
+          else if (env[i - 1] >= 0.5) {
+            if (run > 0.8 * fps) {
+              throws++;
+              for (let k = Math.max(0, i - Math.round(0.3 * fps)); k < Math.min(env.length, i + Math.round(0.05 * fps)); k++) curve[k] = base * dbToLin(11);
+            }
+            run = 0;
+          }
+        }
+        const sm = smoothCurve(curve, 0.3, 0.15);
+        if (sm.length > 1) ds.gain.setValueCurveAtTime(sm, track.offset || 0, (sm.length * HOP) / fs);
+      }
       p.connect(ds).connect(delayIn);
     }
     src.start(track.offset || 0);
   }
+
+  if (activity.length > 1) {
+    verbReturn.gain.setValueCurveAtTime(activity.map((a) => 1 - 0.5 * a), 0, length / fs);
+    notes.push("Reverb ducking: tail drops 6 dB under the lead, blooms in the gaps");
+  }
+  if (throws) notes.push(`Delay throws: ${throws} phrase endings sent to the delay (+11 dB)`);
 
   // Beat: level-match, unmask, duck -------------------------------------
   if (beat && !(beatTrack?.mute) && (!only || only === "beat")) {

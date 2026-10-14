@@ -1,0 +1,6 @@
+{
+  "name": "mv-booth",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node serve.mjs" }
+}
