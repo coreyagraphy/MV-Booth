@@ -188,9 +188,9 @@ const RECORDER = `
 class BoothRecorder extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.at = -1; this.on = false; this.peak = 0; this.n = 0;
+    this.at = -1; this.until = Infinity; this.on = false; this.peak = 0; this.n = 0;
     this.port.onmessage = (e) => {
-      if (e.data.cmd === "start") { this.at = Math.round(e.data.at * sampleRate); this.on = true; }
+      if (e.data.cmd === "start") { this.at = Math.round(e.data.at * sampleRate); this.until = e.data.until ? Math.round(e.data.until * sampleRate) : Infinity; this.on = true; }
       if (e.data.cmd === "stop") { this.on = false; this.port.postMessage({ type: "done" }); }
     };
   }
@@ -199,9 +199,10 @@ class BoothRecorder extends AudioWorkletProcessor {
     if (!ch) return true;
     for (let i = 0; i < ch.length; i++) { const a = Math.abs(ch[i]); if (a > this.peak) this.peak = a; }
     if (++this.n >= 6) { this.port.postMessage({ type: "meter", peak: this.peak }); this.peak = 0; this.n = 0; }
-    if (this.on && currentFrame + ch.length > this.at) {
+    if (this.on && currentFrame + ch.length > this.at && currentFrame < this.until) {
       const off = Math.max(0, this.at - currentFrame);
-      this.port.postMessage({ type: "chunk", data: ch.slice(off) });
+      const end = Math.min(ch.length, this.until - currentFrame);
+      if (end > off) this.port.postMessage({ type: "chunk", data: ch.slice(off, end) });
     }
     return true;
   }
@@ -418,7 +419,7 @@ function applyMixer() {
   for (const t of session.tracks) {
     const n = live.tracks.get(t.id);
     if (!n) continue;
-    const on = audible(t) && !(ui.recording && t.armed);
+    const on = audible(t) && !(ui.recording && t.armed && !ui.recording.punch);
     n.g.gain.setTargetAtTime(on ? dbToLin(t.volumeDb) : 0, ctx.currentTime, 0.01);
     n.p.pan.setTargetAtTime(t.pan || 0, ctx.currentTime, 0.01);
     n.rs.gain.value = dbToLin(-20) * (t.revSend ?? 1) * sp;
@@ -503,7 +504,7 @@ async function startPlayback(from = ui.playhead, { cue = false, countIn = 0 } = 
   const sources = [];
   const pre = countIn ? countIn * barSeconds(bpm()) : 0;
   const t0 = ctx.currentTime + 0.08 + pre;
-  const loop = isLoop() ? { ...session.loop, L: session.loop.end - session.loop.start } : null;
+  const loop = isLoop() && !ui.recording?.punch ? { ...session.loop, L: session.loop.end - session.loop.start } : null;
   if (loop) from = loop.start;
   rawBus.gain.value = 1;
   mixBus.gain.value = 1;
@@ -598,6 +599,10 @@ function frame() {
       const from = Math.max(p.clickHorizon, pos);
       metro.schedule(bpm(), from, from + 2, p.from, p.t0);
       p.clickHorizon = from + 2;
+    }
+    if (ui.recording?.punch && !ui.recording.finishing && pos >= ui.recording.stopAt) {
+      ui.recording.finishing = true;
+      finishRecording();
     }
     if (!p.loop && !ui.recording && pos > projectEnd() + 0.5) {
       stopPlayback(false);
@@ -733,6 +738,7 @@ async function toggleRecord() {
   }
   if (!(await ensureMic())) return;
   mic.chunks = [];
+  if (isPunch()) return startPunch(track);
   const loop = isLoop();
   const from = loop ? session.loop.start : ui.playhead;
   ui.recording = { trackId: track.id, from, loop: loop ? { ...session.loop, L: session.loop.end - session.loop.start } : null };
@@ -745,6 +751,42 @@ async function toggleRecord() {
   if (S_().prompter && session.lyrics.trim()) openPrompter();
   status(loop ? "Loop recording… every pass becomes a take. R or Space to stop." : "Recording… R or Space to stop.");
 }
+const PUNCH_XF = 0.01; // 10 ms crossfade at each punch boundary
+const isPunch = () => session.punch.on && session.punch.out - session.punch.in > 0.1;
+
+/** Pre-roll → record exactly [in, out] (latency-compensated) → post-roll → stop. */
+async function startPunch(track) {
+  const { in: pin, out: pout } = session.punch;
+  const bar = barSeconds(bpm());
+  const from = Math.max(0, pin - (+S_().preRoll || 1) * bar);
+  const recStart = pin - PUNCH_XF;
+  const recEnd = pout + PUNCH_XF;
+  ui.recording = { trackId: track.id, from, punch: { in: pin, out: pout }, stopAt: pout + bar };
+  const t0 = await startPlayback(from, { cue: true });
+  const lat = latencySeconds();
+  // Audio that reaches the recorder at time T was sung at T − latency, so the
+  // capture window is shifted by the latency instead of trimming afterwards.
+  mic.node.port.postMessage({ cmd: "start", at: t0 + (recStart - from) + lat, until: t0 + (recEnd - from) + lat });
+  document.body.classList.add("recording");
+  applyMixer();
+  // The armed track plays up to the punch-in, drops out for the punch, comes back after.
+  const n = live.tracks.get(track.id);
+  if (n && audible(track)) {
+    const v = dbToLin(track.volumeDb);
+    const tIn = t0 + (pin - from), tOut = t0 + (pout - from);
+    n.g.gain.cancelScheduledValues(0);
+    n.g.gain.setValueAtTime(v, ctx.currentTime);
+    n.g.gain.setValueAtTime(v, Math.max(ctx.currentTime, tIn - PUNCH_XF / 2));
+    n.g.gain.linearRampToValueAtTime(0, tIn + PUNCH_XF / 2);
+    n.g.gain.setValueAtTime(0, tOut - PUNCH_XF / 2);
+    n.g.gain.linearRampToValueAtTime(v, tOut + PUNCH_XF / 2);
+  }
+  ui.lyricLine = 0;
+  startTranscription();
+  if (S_().prompter && session.lyrics.trim()) openPrompter();
+  status(`Punch armed: pre-roll from ${fmtTime(from)}, recording ${fmtTime(pin)} → ${fmtTime(pout)}, post-roll 1 bar.`);
+}
+
 async function finishRecording() {
   const rec = ui.recording;
   await new Promise((resolve) => {
@@ -756,6 +798,7 @@ async function finishRecording() {
   stopPlayback(false);
   closePrompter();
   const text = stopTranscription();
+  if (rec.punch) return finishPunch(rec, text);
   const total = mic.chunks.reduce((a, c) => a + c.length, 0);
   const trim = Math.round(latencySeconds() * FS);
   const data = new Float32Array(Math.max(0, total));
@@ -808,6 +851,41 @@ async function finishRecording() {
   renderAll();
   updateUndo();
   status(`${passes.length > 1 ? `${passes.length} takes` : "Take"} saved on ${track.name} · latency comp ${Math.round(latencySeconds() * 1000)} ms`);
+}
+
+function finishPunch(rec, text) {
+  const total = mic.chunks.reduce((a, c) => a + c.length, 0);
+  const data = new Float32Array(total);
+  let o = 0;
+  for (const c of mic.chunks) {
+    data.set(c, o);
+    o += c.length;
+  }
+  mic.chunks = [];
+  ui.playhead = rec.from;
+  const track = trackById(rec.trackId);
+  const pin = rec.punch.in;
+  // Stopped before the punch finished? Keep what was captured.
+  const pout = Math.min(rec.punch.out, pin - PUNCH_XF + total / FS - PUNCH_XF);
+  if (!track || pout - pin < 0.1) {
+    drawPlayhead();
+    return status("Punch stopped before the punch-in point. Nothing recorded.");
+  }
+  history.push(session, "Punch-in take");
+  const buffer = ctx.createBuffer(1, total, FS);
+  buffer.copyToChannel(data, 0);
+  const take = { id: S.uid(), name: `Take ${track.takes.length + 1} · punch`, at: pin - PUNCH_XF, duration: buffer.duration, best: false, transcript: text, punch: { in: pin, out: pout } };
+  audio.set(take.id, buffer);
+  saveAudio(take.id, buffer);
+  track.takes.push(take);
+  S.addPunchClip(track, take, pin, pout, PUNCH_XF);
+  track.showTakes = true;
+  ui.selTrack = track.id;
+  markStale();
+  save();
+  renderAll();
+  updateUndo();
+  status(`Punched ${fmtTime(pin)} → ${fmtTime(pout)} on ${track.name} with 10 ms crossfades. It's a new take in the lane, ready to comp.`);
 }
 
 // ---------------------------------------------------------------- imports
@@ -889,7 +967,8 @@ function engineInputs() {
     if (!r) continue;
     const buffer = ctx.createBuffer(1, r.data.length, FS);
     buffer.copyToChannel(r.data, 0);
-    tracks.push({ id: t.id, name: t.name, role: t.type, buffer, offset: r.offset, pan: t.pan, fx: t.fx, tune: t.tune, dbl: t.dbl, trimDb: t.volumeDb, revSend: t.revSend, dlySend: t.dlySend, mute: false });
+    const studioTuned = t.clips.every((c) => takeOf(t, c.takeId)?.tuned);
+    tracks.push({ id: t.id, name: t.name, role: t.type, buffer, offset: r.offset, pan: t.pan, fx: t.fx, tune: t.tune && !studioTuned, dbl: t.dbl, trimDb: t.volumeDb, revSend: t.revSend, dlySend: t.dlySend, mute: false });
   }
   const b = session.beat && audio.get(session.beat.id) ? { ...session.beat, buffer: audio.get(session.beat.id) } : null;
   return { tracks, beat: b && !b.mute ? b : null };
@@ -956,6 +1035,90 @@ async function automix() {
     document.body.classList.remove("busy");
     $("btnCancel").hidden = true;
   }
+}
+
+// ---------------------------------------------------------------- studio tune (backend)
+const beUrl = (path) => `${(S_().backendUrl || "http://127.0.0.1:8765").replace(/\/$/, "")}${path}`;
+let beOk = false;
+async function checkBackend() {
+  try {
+    const r = await fetch(beUrl("/health"), { cache: "no-store" });
+    const j = await r.json();
+    beOk = !!j.ok;
+    $("beStatus").textContent = beOk ? `online · v${j.version}` : `engines missing: ${j.engines?.error || "?"}`;
+  } catch {
+    beOk = false;
+    $("beStatus").textContent = "offline. Run backend/start-backend.bat (or launch MV Booth from its shortcut).";
+  }
+  $("beDot").className = `be-dot ${beOk ? "ok" : "down"}`;
+  $("btnStudioTune").disabled = !beOk;
+  return beOk;
+}
+/** The take under the selected clip, else under the playhead, else the newest take. */
+function studioSourceTake(t) {
+  const c = t.clips.find((x) => x.id === ui.selClip) || S.clipAt(t, currentPos()) || t.clips.at(-1);
+  return (c && takeOf(t, c.takeId)) || t.takes.at(-1);
+}
+async function studioTune() {
+  const t = trackById(ui.selTrack);
+  if (!t) return toast("Select a track first.");
+  const src = studioSourceTake(t);
+  if (!src || !audio.get(src.id)) return toast("That track has no take to tune.");
+  if (!(await checkBackend())) return toast("The tuning backend isn't running.");
+  const st = S_().studio;
+  const params = {
+    key: S_().key === "auto" ? "auto" : +S_().key, scale: S_().scale, retune_ms: st.retuneMs, vibrato: st.vibrato,
+    amount: st.amount, formant: st.formant, min_confidence: st.minConf, model: st.model,
+  };
+  $("btnStudioTune").disabled = true;
+  try {
+    status(`Sending ${src.name} to the studio tuner…`);
+    const fd = new FormData();
+    fd.append("file", encodeWav(audio.get(src.id)), "take.wav");
+    fd.append("params", JSON.stringify(params));
+    const r = await fetch(beUrl("/tune"), { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const { job } = await r.json();
+    let j;
+    for (;;) {
+      await new Promise((res) => setTimeout(res, 600));
+      j = await (await fetch(beUrl(`/jobs/${job}`), { cache: "no-store" })).json();
+      status(`Studio tune · ${Math.round((j.progress || 0) * 100)}% · ${j.message || j.state}`);
+      if (j.state === "done" || j.state === "failed") break;
+    }
+    if (j.state === "failed") throw new Error(j.message);
+    const wav = await (await fetch(beUrl(`/jobs/${job}/audio`))).arrayBuffer();
+    const buffer = await toMono(await ctx.decodeAudioData(wav));
+    const take = { id: S.uid(), name: `${src.name.replace(/ · tuned.*$/, "")} · tuned`, at: src.at, duration: buffer.duration, best: false, transcript: src.transcript || "", tuned: true, tunedFrom: src.id, report: j.report };
+    audio.set(take.id, buffer);
+    saveAudio(take.id, buffer);
+    edit(`Studio-tune ${src.name}`, () => {
+      t.takes.push(take);
+      // Swap the tuned take into every clip that used the source; the original stays in the lane.
+      for (const c of t.clips) if (c.takeId === src.id) c.takeId = take.id;
+      t.showTakes = true;
+    });
+    renderStudioReport(take);
+    const sm = j.report.summary;
+    status(`Tuned ${src.name} in ${j.report.seconds}s · key ${j.report.key.label} · ${sm.tuned}/${sm.regions} regions tuned, ${sm.skipped_low_confidence} left untouched (low confidence or already in tune). Original kept in the take lane.`);
+  } catch (err) {
+    console.error(err);
+    toast(`Studio tune failed: ${err.message}`);
+    status(`Studio tune failed: ${err.message}. Your takes are untouched.`);
+  } finally {
+    $("btnStudioTune").disabled = !beOk;
+  }
+}
+function renderStudioReport(take) {
+  const el = $("studioReport");
+  const rep = take?.report;
+  if (!rep) return (el.innerHTML = "");
+  const sm = rep.summary;
+  const rows = rep.regions.map((r) => {
+    const cls = r.tuned ? "tuned" : r.reason.startsWith("low") ? "skip" : "fine";
+    return `<div class="rg ${cls}"><span>${fmtTime(take.at + r.start)}–${fmtTime(take.at + r.end)}</span><span>conf ${(r.confidence * 100).toFixed(0)}%</span><span>${r.tuned ? `${r.mean_shift_cents > 0 ? "+" : ""}${r.mean_shift_cents}¢` : esc(r.reason.split(":")[0])}</span></div>`;
+  }).join("");
+  el.innerHTML = `<section><h4>${esc(take.name)} · ${esc(rep.key.label)}</h4><ul><li>${sm.tuned}/${sm.regions} sung regions tuned (${Math.round(sm.coverage * 100)}% of sung time), average move ${sm.mean_shift_cents}¢</li><li>${sm.skipped_low_confidence} region(s) left as recorded</li></ul><div class="regions">${rows}</div></section>`;
 }
 
 // ---------------------------------------------------------------- export
@@ -1089,6 +1252,16 @@ function drawGrid(g, w, h) {
       g.fillRect(Math.round(t2x(b * beat)), 0, 1, h);
     }
   }
+  if (session.punch.out > session.punch.in) {
+    const px0 = t2x(session.punch.in), px1 = t2x(session.punch.out);
+    g.fillStyle = session.punch.on ? "rgba(255,59,74,0.09)" : "rgba(255,59,74,0.03)";
+    g.fillRect(px0, 0, px1 - px0, h);
+    if (session.punch.on) {
+      g.fillStyle = "rgba(255,59,74,0.7)";
+      g.fillRect(Math.round(px0), 0, 1, h);
+      g.fillRect(Math.round(px1), 0, 1, h);
+    }
+  }
   for (const m of session.markers) {
     g.fillStyle = "rgba(255,122,26,0.35)";
     g.fillRect(Math.round(t2x(m.t)), 0, 1, h);
@@ -1105,6 +1278,11 @@ function drawRuler() {
     const lx0 = t2x(session.loop.start), lx1 = t2x(session.loop.end);
     g.fillStyle = session.loop.on ? "rgba(255,122,26,0.55)" : "rgba(255,255,255,0.12)";
     g.fillRect(lx0, 0, lx1 - lx0, 5);
+  }
+  if (session.punch.out > session.punch.in) {
+    const px0 = t2x(session.punch.in), px1 = t2x(session.punch.out);
+    g.fillStyle = session.punch.on ? "rgba(255,59,74,0.85)" : "rgba(255,59,74,0.3)";
+    g.fillRect(px0, 25, px1 - px0, 5);
   }
   if (B) {
     const bar = barSeconds(B);
@@ -1349,6 +1527,10 @@ function renderLanes() {
           const buf = audio.get(k.id);
           if (!buf) return;
           drawWave(g, buf, k.id, k.at, k.at, k.at + k.duration, 4, h - 8, "rgba(160,255,248,0.32)", "transparent");
+          for (const r of k.report?.regions || []) {
+            g.fillStyle = r.tuned ? "rgba(18,224,208,0.55)" : r.reason.startsWith("low") ? "rgba(255,59,74,0.6)" : "rgba(255,255,255,0.15)";
+            g.fillRect(t2x(k.at + r.start), 0, t2x(k.at + r.end) - t2x(k.at + r.start), 3);
+          }
           for (const cl of t.clips.filter((x) => x.takeId === k.id)) {
             g.save();
             g.beginPath();
@@ -1889,6 +2071,7 @@ function renderAll() {
   $("sessionName").textContent = session.name;
   $("btnLoop").classList.toggle("on", session.loop.on);
   $("btnClick").classList.toggle("on", !!S_().click);
+  $("btnPunch").classList.toggle("on", !!session.punch?.on);
   $("btnSnap").classList.toggle("on", !!S_().snap);
   renderLanes();
   renderStrips();
@@ -1901,7 +2084,12 @@ function showTab(name) {
   document.querySelectorAll(".tab").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
   requestAnimationFrame(() => {
     document.querySelectorAll(`.tab[data-panel="${name}"] .seg`).forEach(moveThumb);
-    if (name === "tune") drawPitch();
+    if (name === "tune") {
+      drawPitch();
+      checkBackend();
+      const t = trackById(ui.selTrack);
+      renderStudioReport(t && t.takes.find((k) => k.tuned && t.clips.some((c) => c.takeId === k.id)));
+    }
   });
 }
 function updateChips() {
@@ -1936,6 +2124,18 @@ function bindSettingsToUi() {
   const set = (id, v) => ($(id).value = v);
   set("bpm", s.bpm || 0);
   set("countIn", String(s.countIn ?? 1));
+  set("preRoll", String(s.preRoll ?? 1));
+  const st = s.studio;
+  set("stRetune", st.retuneMs);
+  $("stRetuneOut").textContent = st.retuneMs === 0 ? "0 ms · robot" : `${st.retuneMs} ms`;
+  set("stVib", st.vibrato);
+  $("stVibOut").textContent = `${Math.round(st.vibrato * 100)}%`;
+  set("stAmt", st.amount);
+  $("stAmtOut").textContent = `${Math.round(st.amount * 100)}%`;
+  set("stConf", st.minConf);
+  $("stConfOut").textContent = `${Math.round(st.minConf * 100)}%`;
+  $("stFormant").checked = !!st.formant;
+  set("backendUrl", s.backendUrl);
   set("clickLevel", s.clickLevel ?? 0.6);
   metro.level = s.clickLevel ?? 0.6;
   set("inGain", s.inputGainDb ?? 0);
@@ -1990,6 +2190,46 @@ function bindControls() {
   $("btnCalibrate").onclick = calibrate;
   $("btnLoop").onclick = () => edit(session.loop.on ? "Loop off" : "Loop on", () => (session.loop.on = !session.loop.on), { audioChange: false });
   $("btnClick").onclick = () => edit("Click", () => (s().click = !s().click), { audioChange: false });
+  $("btnPunch").onclick = () => {
+    if (!(session.punch.out > session.punch.in)) return toast("Set a punch range first: Shift-drag on the ruler, or drag a selection and click \"Punch ← selection\".");
+    edit(session.punch.on ? "Punch off" : "Punch on", () => (session.punch.on = !session.punch.on), { audioChange: false });
+  };
+  $("btnPunchSel").onclick = () => {
+    const { start, end } = session.loop;
+    if (!(end > start)) return toast("Drag across the ruler to make a selection first.");
+    edit("Punch from selection", () => {
+      session.punch = { on: true, in: start, out: end };
+      session.loop.on = false;
+    }, { audioChange: false });
+    toast(`Punch ${fmtTime(start)} → ${fmtTime(end)}. Arm a track and press R.`);
+  };
+  const studio = (id, key, outId, fmt) => {
+    const el = $(id);
+    el.oninput = () => {
+      history.push(session, `Studio ${key}`, `studio:${key}`);
+      S_().studio[key] = +el.value;
+      $(outId).textContent = fmt(+el.value);
+      save();
+      updateUndo();
+    };
+  };
+  studio("stRetune", "retuneMs", "stRetuneOut", (v) => (v === 0 ? "0 ms · robot" : `${v} ms`));
+  studio("stVib", "vibrato", "stVibOut", (v) => `${Math.round(v * 100)}%`);
+  studio("stAmt", "amount", "stAmtOut", (v) => `${Math.round(v * 100)}%`);
+  studio("stConf", "minConf", "stConfOut", (v) => `${Math.round(v * 100)}%`);
+  $("stFormant").onchange = (e) => edit("Formant preserve", () => (S_().studio.formant = e.target.checked), { audioChange: false, redraw: false });
+  const preset = (label, v) => () => {
+    edit(label, () => Object.assign(S_().studio, v), { audioChange: false, redraw: false });
+    bindSettingsToUi();
+  };
+  $("btnHardPreset").onclick = preset("Hard-tune preset", { retuneMs: 0, vibrato: 0, amount: 1 });
+  $("btnNaturalPreset").onclick = preset("Natural preset", { retuneMs: 60, vibrato: 0.8, amount: 1 });
+  $("btnStudioTune").onclick = studioTune;
+  $("backendUrl").onchange = (e) => {
+    edit("Backend address", () => (S_().backendUrl = e.target.value.trim()), { audioChange: false, redraw: false });
+    checkBackend();
+  };
+  $("preRoll").onchange = (e) => edit("Pre-roll", () => (s().preRoll = +e.target.value), { audioChange: false, redraw: false });
   $("btnSnap").onclick = () => edit("Snap", () => (s().snap = !s().snap), { audioChange: false });
   $("btnTap").onclick = () => {
     const b = tapper.tap();
@@ -2143,8 +2383,13 @@ function bindControls() {
       const snap = (t) => (bpm() && !ev.altKey ? snapTime(t, bpm(), 1) : t);
       const a = snap(Math.max(0, x2t(Math.min(x0, x))));
       const b = snap(Math.max(0, x2t(Math.max(x0, x))));
-      session.loop = { on: true, start: a, end: Math.max(b, a + 0.25) };
-      $("btnLoop").classList.add("on");
+      if (e.shiftKey) {
+        session.punch = { on: true, in: a, out: Math.max(b, a + 0.25) };
+        $("btnPunch").classList.add("on");
+      } else {
+        session.loop = { on: true, start: a, end: Math.max(b, a + 0.25) };
+        $("btnLoop").classList.add("on");
+      }
       renderLanesOnly();
     };
     ruler.onpointerup = () => {
@@ -2153,7 +2398,7 @@ function bindControls() {
       if (dragging) {
         save();
         updateUndo();
-        toast(`Loop ${fmtTime(session.loop.start)} – ${fmtTime(session.loop.end)} (L toggles)`);
+        toast(e.shiftKey ? `Punch ${fmtTime(session.punch.in)} → ${fmtTime(session.punch.out)} (P toggles)` : `Loop ${fmtTime(session.loop.start)} – ${fmtTime(session.loop.end)} (L toggles · Shift-drag sets punch)`);
       } else seek(mk ? mk.t : x2t(x0));
     };
   };
@@ -2227,6 +2472,7 @@ function bindControls() {
     else if (k === "r" || k === "R") toggleRecord();
     else if (k === "l" || k === "L") $("btnLoop").click();
     else if (k === "c" || k === "C") $("btnClick").click();
+    else if (k === "p" || k === "P") $("btnPunch").click();
     else if (k === "t" || k === "T") $("btnTap").click();
     else if (k === "e" || k === "E") $("btnExport").click();
     else if (k === "b" || k === "B") setAB(ui.ab === "A" ? "B" : "A");

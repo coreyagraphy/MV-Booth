@@ -10,7 +10,9 @@ export const DEFAULT_SETTINGS = {
   targetLufs: -14, balance: 0, space: 1, bpm: 0, latencyMs: 0, prompter: true, transcribe: false, scroll: 18,
   tuneStyle: "natural", key: "auto", scale: "minor", alignDoubles: true, alignTight: 0.9,
   reverb: "auto", delayDiv: "auto", click: false, clickLevel: 0.6, countIn: 1, snap: true, inputGainDb: 0,
-  exportRate: 48000,
+  exportRate: 48000, preRoll: 1,
+  backendUrl: "http://127.0.0.1:8765",
+  studio: { retuneMs: 60, vibrato: 0.8, amount: 1, formant: true, minConf: 0.5, model: "full" },
   stages: { tune: true, align: true, double: true, clean: true, tone: true, dynamics: true, space: true, master: true },
 };
 
@@ -19,7 +21,7 @@ export function newSession(name = "Untitled session") {
   return {
     id: uid(), name, created: now, updated: now, mode: "rap",
     settings: structuredClone(DEFAULT_SETTINGS),
-    lyrics: "", markers: [], loop: { on: false, start: 0, end: 8 },
+    lyrics: "", markers: [], loop: { on: false, start: 0, end: 8 }, punch: { on: false, in: 0, out: 0 },
     master: { volumeDb: 0 }, beat: null, tracks: [],
   };
 }
@@ -52,6 +54,22 @@ export function carve(track, s, e) {
 export function addTakeClip(track, take) {
   carve(track, take.at, take.at + take.duration);
   track.clips.push({ id: uid(), takeId: take.id, start: take.at, end: take.at + take.duration, shift: 0, gainDb: 0, fadeIn: 0.005, fadeOut: 0.01 });
+  track.clips.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Place a punched take: it covers [pin − xf, pout + xf]; the new clip and the
+ * existing audio overlap by `xf` at both boundaries with complementary fades,
+ * so the edit is a click-free crossfade.
+ */
+export function addPunchClip(track, take, pin, pout, xf = 0.01) {
+  const h = xf / 2;
+  carve(track, pin + h, pout - h);
+  for (const c of track.clips) {
+    if (Math.abs(c.end - (pin + h)) < 1e-6) c.fadeOut = xf;
+    if (Math.abs(c.start - (pout - h)) < 1e-6) c.fadeIn = xf;
+  }
+  track.clips.push({ id: uid(), takeId: take.id, start: pin - h, end: pout + h, shift: 0, gainDb: 0, fadeIn: xf, fadeOut: xf, punch: true });
   track.clips.sort((a, b) => a.start - b.start);
 }
 
@@ -182,7 +200,12 @@ export async function saveSession(session) {
 export async function loadSession(id) {
   const s = await store.get(`session:${id}`);
   if (!s) return null;
-  s.settings = { ...structuredClone(DEFAULT_SETTINGS), ...s.settings, stages: { ...DEFAULT_SETTINGS.stages, ...(s.settings?.stages || {}) } };
+  s.settings = {
+    ...structuredClone(DEFAULT_SETTINGS), ...s.settings,
+    stages: { ...DEFAULT_SETTINGS.stages, ...(s.settings?.stages || {}) },
+    studio: { ...DEFAULT_SETTINGS.studio, ...(s.settings?.studio || {}) },
+  };
+  s.punch ??= { on: false, in: 0, out: 0 };
   return s;
 }
 

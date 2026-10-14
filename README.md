@@ -13,6 +13,17 @@ The shortcut starts a tiny local engine silently. It shuts itself down about two
 
 Wear headphones while recording so the beat doesn't bleed into the mic.
 
+## Studio tuning backend (optional, best-quality tuning)
+
+A small local Python service does offline pitch correction with **CREPE** (pitch tracking) and the **WORLD** vocoder (formant-preserving resynthesis). It runs only on your PC (`127.0.0.1:8765`), with no cloud and no login.
+
+1. Install **Python 3.11** from python.org (tick "Add to PATH").
+2. Double-click **`backend\setup.bat`** once. It installs CPU-only torch, CREPE, pyworld, FastAPI.
+   - If pyworld fails to build: install "Desktop development with C++" from the Visual C++ Build Tools and rerun, or `conda install -c conda-forge pyworld`.
+3. From then on the **MV Booth** shortcut starts the backend silently with the app. (`backend\start-backend.bat` runs it with a console if you want to watch it.)
+
+In the **Tune** tab, *Studio tune* shows a green dot when the backend is online. Select a take, set retune speed (0 = robot hard-tune), vibrato keep, amount, confidence threshold and formant preserve, then click **Studio-tune selected take**. The result arrives as a new take ("Take 1 · tuned") and replaces the original on the track; the original stays in the take lane, untouched. The report lists every sung region with its confidence. Regions below the threshold are left exactly as recorded. On the take lane, teal marks tuned regions and red marks skipped ones.
+
 ## Session flow (DAW basics)
 
 | Step | How |
@@ -22,6 +33,7 @@ Wear headphones while recording so the beat doesn't bleed into the mic.
 | Record | Set **Count-in**, switch **Click** on if you want it (C), press **R**. |
 | Loop record | Drag across the ruler to set a loop and press **L**, then record: every pass becomes a take. |
 | Comp | Open the take lanes (the `3 ▾` chip), split at the playhead (**X**), select a clip, click **Comp** on the take you want for that section. **★** marks the best take. |
+| Punch-in | Shift-drag on the ruler (or select, then **Punch ← selection**), press **P**, arm a track, press **R**. Playback starts 1–2 bars early (pre-roll), recording runs exactly from punch-in to punch-out, playback continues one bar (post-roll), and it stops itself. The punch lands as a new take with 10 ms crossfades at both edges. |
 | Edit | Drag clips to move (snaps to 1/16; hold Alt to bypass), drag edges to trim, drag the top corners for fades. The clip inspector sets gain and fade times. |
 | Mix | Header sliders or the **Mixer** tab: volume, pan, reverb and delay sends, meters, master fader. Mix direction sets loudness target, reverb type, delay division. |
 | Automix | Runs the 8-stage engine. Click a stage in the dock to switch it off. **Cancel** stops it safely. |
@@ -30,7 +42,7 @@ Wear headphones while recording so the beat doesn't bleed into the mic.
 | Sessions | Session name (top left): new, rename, duplicate, delete to trash (restorable for 30 days). Autosaves constantly. |
 
 ### Keyboard
-`Space` play/pause · `Enter` stop (back to start point) · `Home` return to zero · `R` record · `L` loop · `C` click · `T` tap tempo · `X` split · `Delete` delete clip · `M` marker · `B` raw/mix · `E` export · `←/→` nudge a beat (Shift = bar) · `+/−` zoom · `F` fit · `Ctrl+Z` undo · `Ctrl+Shift+Z` redo · `Ctrl+S` save. While recording with the prompter open: `↓/↑` move the lyric line.
+`Space` play/pause · `Enter` stop (back to start point) · `Home` return to zero · `R` record · `L` loop · `P` punch · `C` click · `T` tap tempo · `X` split · `Delete` delete clip · `M` marker · `B` raw/mix · `E` export · `←/→` nudge a beat (Shift = bar) · `+/−` zoom · `F` fit · `Ctrl+Z` undo · `Ctrl+Shift+Z` redo · `Ctrl+S` save. While recording with the prompter open: `↓/↑` move the lyric line.
 
 **Lyrics:** start a line with `[bar 5]` and the prompter highlights it when the playhead reaches bar 5.
 

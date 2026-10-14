@@ -52,6 +52,7 @@
         <div class="chips">
           <button class="chip tog-chip" id="btnLoop" title="Loop playback / loop record (L)">⟲ Loop</button>
           <button class="chip tog-chip" id="btnClick" title="Metronome (C)">♪ Click</button>
+          <button class="chip tog-chip punch" id="btnPunch" title="Punch-in recording on the armed track (P). Shift-drag the ruler to set the range.">⏺ Punch</button>
           <button class="chip" id="btnTap" title="Tap tempo (T)">Tap</button>
           <span class="chip" id="chipKey">Key auto</span>
         </div>
@@ -85,6 +86,10 @@
           <span class="sep"></span>
           <label class="tb-field" title="Count-in before recording">Count-in
             <select id="countIn"><option value="0">Off</option><option value="1">1 bar</option><option value="2">2 bars</option></select>
+          </label>
+          <button class="tb" id="btnPunchSel" title="Make the ruler selection the punch range">Punch ← selection</button>
+          <label class="tb-field" title="Pre-roll before punch-in (post-roll is always 1 bar)">Pre-roll
+            <select id="preRoll"><option value="1">1 bar</option><option value="2">2 bars</option></select>
           </label>
           <label class="tb-field" title="Click level">Click <input type="range" id="clickLevel" min="0" max="1" step="0.05" /></label>
           <label class="tb-field" title="Tempo in BPM (0 = detect from the beat)">BPM <input type="number" id="bpm" min="0" max="220" step="1" /></label>
@@ -181,6 +186,20 @@
             </div>
             <label class="check"><input type="checkbox" id="alignDoubles" checked /> <span>Line recorded doubles up to the lead <small>Timing (DTW + time-warp) and pitch-match</small></span></label>
             <label class="field"><span>Alignment tightness <output id="tightOut">90%</output></span><input type="range" id="tight" min="0.3" max="1" step="0.05" /></label>
+            <h3>Studio tune · CREPE + WORLD <span class="be-dot" id="beDot" title="Backend status"></span> <span class="muted small" id="beStatus">checking…</span></h3>
+            <p class="muted small">Offline, best quality. Sends the selected take to the local backend; the tuned version comes back as a new take. The original is never touched. Low-confidence regions are left untuned.</p>
+            <label class="field"><span>Retune speed <output id="stRetuneOut"></output></span><input type="range" id="stRetune" min="0" max="400" step="5" /></label>
+            <label class="field"><span>Vibrato keep <output id="stVibOut"></output></span><input type="range" id="stVib" min="0" max="1" step="0.05" /></label>
+            <label class="field"><span>Amount <output id="stAmtOut"></output></span><input type="range" id="stAmt" min="0" max="1" step="0.05" /></label>
+            <label class="field"><span>Leave untuned below confidence <output id="stConfOut"></output></span><input type="range" id="stConf" min="0.2" max="0.9" step="0.05" /></label>
+            <label class="check"><input type="checkbox" id="stFormant" checked /> <span>Preserve formants <small>Off moves the vocal tract with the pitch (chipmunk/darker)</small></span></label>
+            <div class="row">
+              <button id="btnStudioTune" class="btn">Studio-tune selected take</button>
+              <button id="btnHardPreset" class="btn" title="Retune 0 ms, vibrato 0: the robot effect">Hard-tune preset</button>
+              <button id="btnNaturalPreset" class="btn" title="Retune 60 ms, vibrato 80%">Natural preset</button>
+            </div>
+            <label class="field"><span>Backend address</span><input type="text" id="backendUrl" /></label>
+            <div id="studioReport" class="report"></div>
             <h3>Pitch view · <span id="pitchLane" class="muted">select a lane</span></h3>
             <canvas class="pitchgraph" id="pitchGraph"></canvas>
             <div class="legend"><span><i style="background:#3d8f89"></i>Sung</span><span><i style="background:#ff7a1a"></i>Corrected</span><span><i style="background:rgba(255,255,255,.18)"></i>Scale notes</span></div>

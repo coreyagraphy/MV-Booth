@@ -16,7 +16,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Loop record → one take per pass | ✓ | **Built**: a stopped-early final pass is kept as a take but not put on the track |
 | Nudge playhead (beat / bar) | ✓ | **Built**: ← → (Shift = bar) |
 | Markers | ✗ | **Built**: M adds; click on the ruler jumps; double-click renames or deletes |
-| Punch in/out with pre-roll | ✗ | Partial: recording starts at the playhead (or loop start) after count-in; auto punch-out not built |
+| Punch in/out with pre-roll / post-roll | ✗ | **Built (2.2)**: Shift-drag or selection sets the range (red), P arms, 1–2 bar pre-roll, sample-exact latency-compensated capture, 1 bar post-roll, auto-stop, new take + 10 ms crossfades |
 | Tempo map / time-signature changes | ✗ | Not built (fixed 4/4, one tempo) |
 
 ### Tracks, takes & editing
@@ -64,7 +64,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Ordered stages TUNE → ALIGN → DOUBLE → CLEAN → TONE → DYNAMICS → SPACE → MASTER | ✓ | **Built** |
 | Per-stage enable, states queued / active / done / failed / skipped | ✓ | **Built**: click a stage in the dock to switch it off |
 | Cancellable; failure never drops audio | ✓ | **Built**: Cancel button; takes are never modified |
-| Pitch correction with strength, key/scale, formant keep, vibrato keep | ✓ (WASM or backend) | **Built client-side**: YIN + PSOLA, Off / Natural / Tight / Hard |
+| Pitch correction with strength, key/scale, formant keep, vibrato keep | ✓ (WASM or backend) | **Built both ways**: in-browser YIN + PSOLA inside Automix, and **Studio tune (2.2)**: local backend, CREPE + WORLD, per-region confidence, low-confidence regions left untouched, result as a new take |
 | Align doubles to the lead | ✓ (quantize) | **Built**: DTW + WSOLA timing, PSOLA pitch-match |
 | Double stage: detune, delay, −6 dB, or use the recorded double | ✓ | **Built**: ±9–11 cents, drifting 19–27 ms, optional octave |
 | Breath control | ✓ | **Built** |
@@ -88,10 +88,10 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Stems (one per track) and raw takes | ✓ | **Built** |
 | Lyric import (.txt), `[bar N]` sync, manual advance | ✓ | **Built**: highlighted line follows the playhead; ↓/↑ advance by hand |
 
-## 2. Decisions on the spec's open questions
+## 2. Decisions on the spec's open questions (updated for 2.2)
 
-1. **Client-side or backend?** All client-side. Tune and align run in the browser already, so §7's backend contract is not needed. Keep it only for a future ML denoise or vocal-isolation stage.
-2. **Real-time or offline pitch correction?** Offline: record dry, the engine tunes after. A live tuned monitor needs an AudioWorklet pitch shifter; that's a candidate for 2.2.
+1. **Client-side or backend?** Both. The browser still does tracking, editing, Automix and in-browser tuning. A **local** FastAPI backend (`backend/`, 127.0.0.1:8765, no auth, stateless) does the best-quality offline tuning. The session model stays in the browser.
+2. **Real-time or offline pitch correction?** Offline post-record on the backend is the quality path. Live tuned monitoring is deliberately not built.
 3. **Who builds it?** Built here, iteratively, in the MV-Booth repo.
 4. **Target user?** Personal studio tool (single user, no auth). Multi-artist accounts would add auth, sync and billing scope.
 
@@ -108,7 +108,7 @@ session { id, name, mode, settings{…, stages{tune…master}}, lyrics, markers[
 
 A clip plays take audio at source time `t − shift − take.at` for timeline `t` in `[start, end)`. Moving a clip shifts `start`, `end` and `shift` together. Comping swaps `takeId`. Audio lives in IndexedDB under `audio:<takeId>`.
 
-## 4. Verification
+## 4. Verification (2.1 suite; 2.2 adds the punch and studio-tune suites)
 
 The browser test drives the real UI in headless Chromium with a simulated mic. Twenty-four checks pass with zero page errors:
 - beat import + BPM detect, arm, ruler loop drag
@@ -120,10 +120,26 @@ The browser test drives the real UI in headless Chromium with a simulated mic. T
 - WAV 48 kHz/24-bit, MP3 320
 - new/switch session, persistence after reload
 
-## 5. Next (2.2 candidates, by value)
+## 5. Backend contract (as built, 2.2)
 
-1. Live tuned monitoring (AudioWorklet PSOLA).
-2. Volume/pan automation lanes you can draw.
-3. Punch-out point and pre-roll.
-4. Crossfade editor for comp boundaries.
-5. Manual EQ/compressor insert per track, overriding the engine.
+```text
+GET  /health                      → { ok, version, engines{torch,crepe,world} | error }
+POST /tune  multipart file=<WAV>, params=<JSON>
+     params: key ("auto"|0-11), scale, retune_ms (0=hard), vibrato (0..1 keep), amount (0..1),
+             formant (bool), min_confidence (0..1), model ("full"|"tiny")
+     → { job }
+GET  /jobs/{id}                   → { state: queued|running|done|failed, progress, message, report }
+GET  /jobs/{id}/audio             → tuned WAV (float32, same length and rate as the input)
+report: { key{label,tonic,scale,confident}, regions[{start,end,confidence,tuned,mean_shift_cents,reason}], summary }
+```
+
+CORS allows localhost and https://mv-booth.netlify.app, including Chrome's Private Network Access preflight, so the installed web app can reach the local backend.
+
+**Measured (synthetic voice, three notes −40/+30/−25 ¢ with vibrato):** Natural lands within ±1.2 ¢ and keeps the vibrato (σ ≈ 12 ¢ in and out). Hard (retune 0) requests exactly 0.00 ¢ and WORLD's harvest tracker measures −0.04…−0.01 ¢. Auto-key finds A minor. A noise burst comes back bit-identical. A 12 s take takes about 18 s on CPU.
+
+## 6. Next (candidates, by value)
+
+1. Volume/pan automation lanes you can draw.
+2. Crossfade editor for comp boundaries.
+3. Manual EQ/compressor insert per track, overriding the engine.
+4. Backend vocal isolation / ML denoise stages on the same job API.

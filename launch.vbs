@@ -8,4 +8,8 @@ If sh.Run("cmd /c where node >nul 2>nul", 0, True) <> 0 Then
   sh.Run "https://nodejs.org/en/download"
   WScript.Quit
 End If
+If fso.FileExists(dir & "\backend\.venv\Scripts\python.exe") Then
+  ' Tuning backend (localhost:8765), started hidden if it has been set up.
+  sh.Run """" & dir & "\backend\.venv\Scripts\pythonw.exe"" """ & dir & "\backend\server.py""", 0, False
+End If
 sh.Run "node """ & dir & "\serve.mjs""", 0, False
