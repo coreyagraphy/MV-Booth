@@ -2,7 +2,8 @@
 // index.html is fully self-contained (CSS + every JS module inlined), so the
 // app works even if only that one file gets uploaded. The extra files
 // (service worker, manifest, icons) add offline mode and "Install app".
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
 const ORDER = ["dsp", "store", "wav", "session", "metro", "mp3", "tune", "automix", "doubles", "engine", "app"];
 
@@ -42,7 +43,14 @@ const sw = readFileSync("sw.js", "utf8").replace(
   'const SHELL = ["./", "index.html", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png"];',
 );
 if (!sw.includes('"icons/icon-512.png"];')) throw new Error("sw shell rewrite failed");
-writeFileSync("dist/sw.js", sw);
+// Every build gets its own fingerprint in sw.js: the app's update notice compares it, and the
+// cache name changes with it, so a release can never look identical to the one before.
+const fp = createHash("sha256");
+for (const f of ["index.html", "styles.css", "sw.js", "manifest.webmanifest", ...readdirSync("js").filter((n) => n.endsWith(".js")).map((n) => `js/${n}`)]) fp.update(readFileSync(f));
+const build = fp.digest("hex").slice(0, 10);
+const swBuilt = sw.replace(/const CACHE = "([^"]+)";/, `const CACHE = "$1-${build}";`);
+if (swBuilt === sw) throw new Error("sw cache fingerprint failed");
+writeFileSync("dist/sw.js", swBuilt);
 
 const css = readFileSync("styles.css", "utf8");
 const svg = readFileSync("icons/icon.svg", "utf8");

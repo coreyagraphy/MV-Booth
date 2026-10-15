@@ -180,6 +180,7 @@
               <button id="btnMic" class="btn">Enable mic</button>
               <label class="check" title="Hear your own voice in your headphones (same as 🎧 Monitor at the top)"><input type="checkbox" id="monitor" /> Monitor (headphones)</label>
             </div>
+            <p class="muted small">Monitor goes mic → Windows → browser → headphones, so you hear yourself a little late (an echo; Bluetooth: very late). For zero delay use your headset's <b>sidetone</b> or an interface's <b>direct monitoring</b> and leave Monitor off. Keep Windows "Listen to this device" off.</p>
             <label class="field"><span>Input gain <output id="inGainOut">0 dB</output></span><input type="range" id="inGain" min="-60" max="24" step="0.5" /></label>
             <h3>Latency</h3>
             <p class="explain"><b>Takes landing off the beat?</b> Run the <b>Sync test</b> once per headset/mic: put your headphones on, press it, and clap (or say "ta") on every click. The booth measures how late your setup really is and lines every future take up with the beat. Already recorded? Select a clip and use <b>Timing ◀ ▶</b> in the toolbar.</p>
@@ -320,6 +321,11 @@
       </div>
     </div>
     <div class="toast glass" id="toast" role="status" aria-live="polite"></div>
+    <div class="update-bar glass" id="updateBar" role="status" aria-live="polite" hidden>
+      <i></i><b>New version of MV Booth is live</b><span>Your session is saved before it reloads.</span>
+      <button id="btnUpdate" class="btn" title="Save and reload into the new version">Reload</button>
+      <button id="btnUpdateLater" class="tb" title="Keep working; the next release will ask again">Later</button>
+    </div>
 
     <script type="module" src="js/app.js"></script>
   </body>

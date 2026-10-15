@@ -448,3 +448,10 @@ body.recording .stage { box-shadow: 0 0 0 2px rgba(255, 59, 74, 0.7), 0 0 40px r
   .chips { gap: 4px; }
   .chips .chip { padding: 5px 6px; letter-spacing: 0.04em; }
 }
+
+/* Update notice: a calm bar above the dock, never a modal (it must not interrupt a take). */
+.update-bar { background: rgba(9, 12, 17, 0.97); backdrop-filter: blur(14px); position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 12px; padding: 10px 12px 10px 16px; border-radius: 14px; border: 1px solid rgba(18, 224, 208, 0.45); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 24px rgba(18, 224, 208, 0.12); animation: rise 0.45s var(--ease) both; white-space: nowrap; }
+.update-bar[hidden] { display: none; }
+.update-bar i { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 10px var(--teal); }
+.update-bar b { font: 600 12px "Space Grotesk"; }
+.update-bar span { font-size: 11px; color: var(--dim); }

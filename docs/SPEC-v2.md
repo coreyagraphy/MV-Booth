@@ -44,7 +44,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Input gain (−∞…+24 dB) before the recorder | ✓ | **Built** |
 | Input meter + clip-hold LED | ✓ | **Built** (2 s hold) |
 | Recording clearly visible while it happens | ✗ | **Built (2.3)**: count-in / pre-roll / RECORDING / post-roll banner with time recorded and live input level, red timeline glow, live red waveform on the armed track |
-| Direct monitoring post-gain | ✓ | **Built**: 🎧 Monitor in the top bar (turns the mic on, remembered), round-trip readout, Bluetooth-headset warning |
+| Direct monitoring post-gain | ✓ | **Built**: 🎧 Monitor in the top bar (turns the mic on, remembered), round-trip readout, says how late it is on this setup (browser monitoring always takes the round trip) and points to sidetone / interface direct monitoring for zero delay, Bluetooth-headset warning |
 | Latency trim + auto-calibrate, stored per device | ✓ | **Built**: 4-click loopback (speakers) and, since 2.5.3, a clap-along **Sync test** for headsets (12 measured clicks, median onset, rejects uneven or missing claps); trim range −200…+600 ms for Bluetooth; per-track **Timing ◀ ▶** nudge for takes already recorded |
 | Monitoring through FX (live reverb in headphones) | ✗ | Not built |
 
@@ -87,6 +87,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Feature | In 2.0 spec | MV Booth 2.1 |
 |---|---|---|
 | Named sessions, autosave to IndexedDB, list, duplicate | ✓ | **Built** |
+| App update notice | ✗ | **Built (2.5.4)**: compares the running release's fingerprint (sw.js cache name, content-hashed per Netlify build) with the server's every 5 min and on focus; "New version is live → Reload" saves the session first and waits while recording, Automix or a clean/tune job runs |
 | Delete to trash, recoverable for 30 days | ✓ | **Built** |
 | Master WAV 48 kHz / 24-bit | ✓ | **Built**: 48 or 44.1 kHz |
 | MP3 320 kbps in a Worker | ✓ | **Built**: lamejs (LGPL, vendored with licence) |

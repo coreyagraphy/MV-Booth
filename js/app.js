@@ -329,7 +329,14 @@ async function toggleMonitor(on) {
   } catch {
     /* storage blocked */
   }
-  status(on ? "Monitoring on: you hear your mic in the headphones. Headphones only (speakers will feed back)." : "Monitoring off.");
+  if (!on) return status("Monitoring off.");
+  // Monitoring through the browser always takes the full round trip (mic → system → browser → headphones).
+  // Over ~25 ms it is heard as an echo, so say how late it is here and what removes it.
+  const ms = Math.max(0, Math.round(latencySeconds() * 1000));
+  if (ms > 25) {
+    toast(`Monitor is ${ms} ms late on this setup, so you'll hear an echo. For zero delay, turn Monitor off and use your headset's sidetone or your interface's direct monitoring.`);
+    status(`Monitoring on · ${ms} ms behind your voice (a browser can't do less on this setup). Zero-delay options: headset sidetone (headset app or Windows mic Properties → Levels) or an interface's direct-monitor knob. Make sure Windows "Listen to this device" is off, or you'll hear yourself twice.`);
+  } else status("Monitoring on: you hear your mic in the headphones. Headphones only (speakers will feed back).");
 }
 
 /** Store a measured round trip as this mic's latency trim (the browser's own report + trim = measured). */
@@ -3110,6 +3117,44 @@ function addMarker(name) {
 
 // ---------------------------------------------------------------- app shell + boot
 if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("sw.js").catch(() => {});
+
+// ---------------------------------------------------------------- update notice
+// Each release has its own fingerprint in sw.js (the cache name; Netlify builds add a content hash).
+// The page remembers the one it started with; a different one on the server means a newer MV Booth
+// is live. An open window keeps running the code it loaded, so it says so instead of going stale.
+let swBaseline = null;
+let lastUpdateCheck = 0;
+async function checkForUpdate(force = false) {
+  if (location.protocol === "file:" || !$("updateBar").hidden) return;
+  if (!force && Date.now() - lastUpdateCheck < 60000) return;
+  lastUpdateCheck = Date.now();
+  try {
+    const r = await fetch("sw.js", { cache: "no-store" });
+    const v = r.ok ? (await r.text()).match(/const CACHE = "([^"]+)"/)?.[1] : null;
+    if (!v) return;
+    if (!swBaseline) swBaseline = v;
+    else if (v !== swBaseline) {
+      $("updateBar").hidden = false;
+      $("updateBar").dataset.version = v;
+    }
+  } catch {
+    /* offline: nothing to compare */
+  }
+}
+$("btnUpdate").onclick = async () => {
+  if (guardBusy("reloading")) return;
+  stopPlayback(false);
+  await flushSave();
+  location.reload();
+};
+$("btnUpdateLater").onclick = () => {
+  swBaseline = $("updateBar").dataset.version || swBaseline; // ask again only for the next release
+  $("updateBar").hidden = true;
+};
+checkForUpdate(true);
+setInterval(checkForUpdate, 5 * 60000);
+addEventListener("focus", () => checkForUpdate());
+document.addEventListener("visibilitychange", () => !document.hidden && checkForUpdate());
 if (["localhost", "127.0.0.1"].includes(location.hostname)) {
   const ping = () => fetch("__alive", { cache: "no-store" }).catch(() => {});
   ping();
@@ -3148,4 +3193,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, mic, automix, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { get session() { return session; }, ui, audio, mic, automix, checkForUpdate, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };

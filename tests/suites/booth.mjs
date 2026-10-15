@@ -48,6 +48,7 @@ ok("Enter/Space after clicking Snap don't toggle it again", (await B(() => windo
 await p.click("#btnMonitor"); await p.waitForTimeout(400);
 const mon = await B(() => ({ chip: document.querySelector("#btnMonitor").classList.contains("on"), box: document.querySelector("#monitor").checked, live: !!window.__booth.mic.node, gain: window.__booth.mic.monitor.gain.value }));
 ok("🎧 Monitor turns the mic on and routes it to the headphones", mon.chip && mon.box && mon.live && mon.gain > 0.9, JSON.stringify(mon));
+ok("Monitor says how late it is and how to get zero delay", /ms behind your voice|Monitoring on/.test(await p.textContent("#status")), await p.textContent("#status"));
 await p.reload(); await p.waitForTimeout(1200);
 await p.click("#btnMic"); await p.waitForTimeout(400);
 ok("monitoring comes back on with the mic next time", await B(() => document.querySelector("#btnMonitor").classList.contains("on") && window.__booth.mic.monitor.gain.value > 0.9));
@@ -76,5 +77,44 @@ await p.mouse.move(th.x + th.width / 2, th.y + th.height / 2); await p.mouse.dow
 const v2 = await B(() => window.__booth.ui.view.start);
 ok("dragging the scroll bar scrolls the song", v2 > 1, v2.toFixed(2));
 await p.screenshot({ path: `${S}/booth.png` });
+
+// Update notice: simulate a new release by serving a different sw.js fingerprint. Own context with
+// service workers blocked, because Playwright can't intercept requests a service worker makes.
+const uctx = await b.newContext({ serviceWorkers: "block", viewport: { width: 1600, height: 960 } });
+const p2 = await uctx.newPage();
+p2.on("pageerror", (e) => errs.push(e.stack));
+{
+const p = p2;
+const B = (fn, a) => p.evaluate(fn, a);
+await p.goto(process.env.BASE_URL); await p.waitForTimeout(1200);
+await p.setInputFiles("#fileVocal", `${S}/vocal.wav`); await p.waitForFunction(() => window.__booth.session.tracks.length === 1);
+await p.click("#btnMic"); await p.waitForTimeout(400);
+const bar = () => p.evaluate(() => !document.querySelector("#updateBar").hidden);
+await B(() => window.__booth.checkForUpdate(true));
+ok("no update notice while the server has the same version", !(await bar()));
+let release = "mvbooth-test-next";
+await p.route("**/sw.js", (r) => r.fulfill({ contentType: "text/javascript", body: `const CACHE = "${release}";` }));
+await B(() => window.__booth.checkForUpdate(true));
+ok("update notice appears when a new version is live", await bar());
+await p.waitForTimeout(700); await p.screenshot({ path: `${S}/update-bar.png` });
+await p.click("#btnUpdateLater");
+await B(() => window.__booth.checkForUpdate(true));
+ok("Later hides it until the next release", !(await bar()));
+release = "mvbooth-test-next-2";
+await B(() => window.__booth.checkForUpdate(true));
+ok("…and the next release asks again", await bar());
+await p.locator(".lane.vocal .arm").first().click();
+await p.selectOption("#countIn", "0");
+await p.keyboard.press("r"); await p.waitForTimeout(600);
+await B(() => (window.__notReloaded = true));
+await p.click("#btnUpdate"); await p.waitForTimeout(500);
+ok("Reload waits while recording", (await B(() => window.__notReloaded === true)) && /Wait for the recording/.test(await p.textContent("#toast")), await p.textContent("#toast"));
+await p.keyboard.press("r"); await p.waitForFunction(() => !window.__booth.ui.recording, null, { timeout: 15000 });
+const takes = await B(() => window.__booth.session.tracks[0].takes.length);
+await Promise.all([p.waitForEvent("load"), p.click("#btnUpdate")]);
+await p.waitForFunction(() => window.__booth?.session?.tracks?.length >= 1, null, { timeout: 15000 });
+ok("Reload saves the session, then reloads", (await B(() => window.__notReloaded === undefined)) && (await B(() => window.__booth.session.tracks[0].takes.length)) === takes, `${takes} takes kept`);
+await p.screenshot({ path: `${S}/update.png` });
+}
 ok("no page errors", errs.length === 0, errs.join("\n"));
 await b.close();
