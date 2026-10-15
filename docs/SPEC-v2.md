@@ -32,7 +32,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Clips: move, trim, split, delete | ✗ | **Built**: explicit tool picker (2.3): Move / Trim / Cut / Fade, keys 1–4, tool cursors, hint line; X cuts at playhead, Delete removes |
 | Clip gain and fades | ✗ (metadata only) | **Built**: drag the fade handles on top corners, or set them in the clip inspector |
 | Snap to grid | ✓ | **Built**: 1/16 grid; hold Alt to bypass |
-| Zoom and scroll | ✓ (0.5–2.2×) | **Built**: −/+/Fit, Ctrl+wheel zooms at the cursor, Shift/sideways wheel scrolls, follows the playhead |
+| Zoom and scroll | ✓ (0.5–2.2×) | **Built**: −/+/Fit, ⇤ Start, a scroll bar under the timeline (drag or click), Ctrl+wheel zooms at the cursor, Shift/sideways wheel scrolls, follows the playhead and seeks |
 | Non-destructive edits (takes immutable) | ✓ | **Built**: all edits are metadata; audio stays untouched |
 | Undo / redo (cap 50, slider drags coalesced) | ✓ | **Built**: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y |
 | Crossfades between adjacent clips | ✗ | Partial: automatic 5 ms edge fades; no overlapping crossfade editor |
@@ -44,8 +44,8 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Input gain (−∞…+24 dB) before the recorder | ✓ | **Built** |
 | Input meter + clip-hold LED | ✓ | **Built** (2 s hold) |
 | Recording clearly visible while it happens | ✗ | **Built (2.3)**: count-in / pre-roll / RECORDING / post-roll banner with time recorded and live input level, red timeline glow, live red waveform on the armed track |
-| Direct monitoring post-gain | ✓ | **Built**: round-trip readout, warns over 25 ms |
-| Latency trim + auto-calibrate, stored per device | ✓ | **Built**: 4-click loopback, median onset |
+| Direct monitoring post-gain | ✓ | **Built**: 🎧 Monitor in the top bar (turns the mic on, remembered), round-trip readout, Bluetooth-headset warning |
+| Latency trim + auto-calibrate, stored per device | ✓ | **Built**: 4-click loopback (speakers) and, since 2.5.3, a clap-along **Sync test** for headsets (12 measured clicks, median onset, rejects uneven or missing claps); trim range −200…+600 ms for Bluetooth; per-track **Timing ◀ ▶** nudge for takes already recorded |
 | Monitoring through FX (live reverb in headphones) | ✗ | Not built |
 
 ### Mixer

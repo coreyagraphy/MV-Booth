@@ -80,3 +80,39 @@ export class TapTempo {
     return Math.round(Math.min(200, Math.max(60, bpm)));
   }
 }
+
+/**
+ * Sync test analysis. `data` was recorded from the first click on; clicks are `gap` s apart, the
+ * first `lead` are warm-up. Returns the median delay from each measured click to the artist's clap
+ * (= how late a take sung on the beat really lands), or an error the artist can act on.
+ */
+export function measureSync(data, fs, { gap, lead, n }) {
+  // Onset = first big jump in the sample-to-sample difference (claps and "t" are broadband).
+  const d = new Float32Array(data.length);
+  for (let i = 1; i < data.length; i++) d[i] = Math.abs(data[i] - data[i - 1]);
+  // Noise floor: median of the whole recording (claps are short, so they barely move it).
+  const sample = [];
+  for (let i = 0; i < d.length; i += 13) sample.push(d[i]);
+  sample.sort((x, y) => x - y);
+  const floor = Math.max(0.003, (sample[sample.length >> 1] || 0) * 8);
+  const offs = [];
+  for (let k = lead; k < lead + n; k++) {
+    const a = Math.max(0, Math.round((k * gap - 0.2) * fs));
+    const b = Math.min(d.length, Math.round((k * gap + gap - 0.2) * fs));
+    let mx = 0;
+    for (let i = a; i < b; i++) mx = Math.max(mx, d[i]);
+    if (mx < floor) continue;
+    for (let i = a; i < b; i++) {
+      if (d[i] > mx * 0.3) {
+        offs.push(i / fs - k * gap);
+        break;
+      }
+    }
+  }
+  if (offs.length < Math.ceil(n / 2)) return { error: `only heard ${offs.length} of ${n} claps. Clap louder (or closer to the mic) and try again.`, heard: offs.length };
+  offs.sort((x, y) => x - y);
+  const q = (p) => offs[Math.min(offs.length - 1, Math.floor(p * offs.length))];
+  const spread = q(0.75) - q(0.25);
+  if (spread > 0.06) return { error: `claps were uneven (±${Math.round(spread * 500)} ms). Try again, steady and right on the click.`, heard: offs.length };
+  return { latency: q(0.5), spread, heard: offs.length };
+}

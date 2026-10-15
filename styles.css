@@ -434,3 +434,17 @@ body.recording .stage { box-shadow: 0 0 0 2px rgba(255, 59, 74, 0.7), 0 0 40px r
 .steps .acts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 120px; }
 .steps .acts button { padding: 5px 8px; border-radius: 7px; border: 1px solid var(--edge); background: rgba(0, 0, 0, 0.4); font-size: 11px; }
 .steps li.next .acts button:first-child { border-color: rgba(255, 122, 26, 0.6); color: var(--amber); }
+
+/* Timeline scroll bar */
+.hscroll { position: relative; height: 12px; margin: 0 0 0 var(--hdr); background: rgba(0, 0, 0, 0.35); border-top: 1px solid var(--edge); cursor: pointer; flex: none; }
+.hscroll .hthumb { position: absolute; top: 2px; bottom: 2px; min-width: 24px; border-radius: 6px; background: rgba(18, 224, 208, 0.35); border: 1px solid rgba(18, 224, 208, 0.6); cursor: grab; transition: background 0.2s var(--ease); }
+.hscroll .hthumb:hover, .hscroll.drag .hthumb { background: rgba(18, 224, 208, 0.6); }
+.hscroll.drag .hthumb { cursor: grabbing; }
+#trackTimingOut { min-width: 44px; text-align: center; display: inline-block; }
+
+/* Header: labels never break mid-word; chips compact on narrower screens so it stays one row. */
+.brand, #btnGuide, .seg button, #clockSub, .chip { white-space: nowrap; }
+@media (max-width: 1800px) {
+  .chips { gap: 4px; }
+  .chips .chip { padding: 5px 6px; letter-spacing: 0.04em; }
+}

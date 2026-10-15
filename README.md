@@ -13,6 +13,10 @@ The shortcut starts a tiny local engine silently. It shuts itself down about two
 
 Wear headphones while recording so the beat doesn't bleed into the mic.
 
+**Hear yourself:** click **🎧 Monitor** in the top bar (headphones only, speakers will feed back). It turns the mic on and stays on next time.
+
+**Takes off the beat?** Booth tab → **Sync test (clap along)**: headphones on, clap or say "ta" on each click. It measures your real headset delay (Bluetooth can be 150–300 ms) and lines up every new take. For takes already recorded, click a clip and use **Timing ◀ ▶** in the toolbar (10 ms steps, Shift = 1 ms). Bluetooth headsets also drop to phone quality while their mic is on; a wired headset or USB mic records far better.
+
 ## Studio tuning backend (optional, best-quality tuning)
 
 A small local Python service does offline pitch correction with **CREPE** (pitch tracking) and the **WORLD** vocoder (formant-preserving resynthesis). It runs only on your PC (`127.0.0.1:8765`), with no cloud and no login.
@@ -110,7 +114,7 @@ No neural network is downloaded, and nothing leaves your PC. The engine uses the
 
 ## Latency, storage, Netlify
 
-- **Latency:** takes are shifted by the reported device latency. If your vocal still lands late or early, nudge **Latency trim** (positive pulls takes earlier).
+- **Latency:** takes are shifted by the reported device latency plus the trim from the **Sync test** (headset) or **Loopback test** (speakers). If a vocal still lands late or early, nudge **Latency trim** (positive pulls new takes earlier) or the clip's **Timing ◀ ▶**.
 - **Storage:** takes, the beat and lyrics live in the app's local storage, so they survive restarts. Export anything you want to keep.
 - **Offline:** after the first launch the app shell is cached and keeps working offline.
 - **Netlify:** **https://mv-booth.netlify.app** (password-protected). Netlify rebuilds on every push to `main`; `build.mjs` publishes only the app, not the installers. To install it as an app with no Node.js: open the link in Edge or Chrome, enter the site password once, then click **Install** in the address bar.

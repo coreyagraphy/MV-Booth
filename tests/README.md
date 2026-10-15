@@ -22,6 +22,7 @@ node run.mjs stems song           # just some suites
 | song | Song checklist, Clean tab, cleaned take, master tone/width/ceiling |
 | stems | multi-stem import, roles, mute/solo, per-stem mix + export, persistence |
 | fixes | audit fixes: short ad-lib loudness, clip before 0:00, undo blocked while recording, save on close, duplicate-safe purge |
+| booth | Enter/Space never re-press buttons (marker bug), 🎧 Monitor, sync test maths (180 / 320 ms, uneven, too few), track timing nudge, scroll bar, ⇤ Start |
 | single | the self-contained `dist/index.html` alone (Netlify single-file upload) |
 | studio | Studio tune through the local backend (needs `backend\start-backend.bat`) |
 

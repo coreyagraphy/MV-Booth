@@ -1,6 +1,6 @@
 import { CLEAN_DEFAULTS, FX, MODES, ROLES, DELAYS, REVERBS, estimateBpm, makeImpulse, renderVocal } from "./automix.js";
 import { STAGES, renderStem, runEngine } from "./engine.js";
-import { Metronome, TapTempo, barBeat, barSeconds, snapTime } from "./metro.js";
+import { Metronome, TapTempo, barBeat, barSeconds, measureSync, snapTime } from "./metro.js";
 import { encodeMp3 } from "./mp3.js";
 import * as S from "./session.js";
 import * as store from "./store.js";
@@ -262,6 +262,15 @@ async function ensureMic() {
     };
     $("btnMic").textContent = "Mic live";
     $("btnMic").classList.add("live");
+    // Monitoring comes back on if you left it on (it is what lets you hear yourself in the headset).
+    try {
+      if (localStorage.getItem("mvb.monitor") === "1") setMonitor(true);
+    } catch {
+      /* storage blocked */
+    }
+    const label = mic.stream.getAudioTracks()[0]?.label || "";
+    if (/hands-?free|bluetooth|airpods|buds|\bbt\b/i.test(label))
+      toast(`"${label}" looks like a Bluetooth headset: it adds 150–300 ms delay and drops to phone quality while its mic is on. A wired headset or USB mic records far better. Run the Sync test either way.`);
     const devId = mic.stream.getAudioTracks()[0]?.getSettings?.().deviceId;
     try {
       const saved = localStorage.getItem(`mvb.latency.${devId}`);
@@ -304,6 +313,74 @@ const latencySeconds = () => autoLatency() + S_().latencyMs / 1000;
 function updateRoundTrip() {
   const ms = Math.round(latencySeconds() * 1000);
   $("rtOut").textContent = `Round trip: ${ms} ms${ms > 25 ? " · monitor may feel late" : ""}`;
+}
+
+// ---------------------------------------------------------------- monitoring
+function setMonitor(on) {
+  mic.monitor.gain.setTargetAtTime(on ? 1 : 0, ctx.currentTime, 0.01);
+  $("monitor").checked = on;
+  $("btnMonitor").classList.toggle("on", on);
+}
+async function toggleMonitor(on) {
+  if (on && !(await ensureMic())) return setMonitor(false);
+  setMonitor(on);
+  try {
+    localStorage.setItem("mvb.monitor", on ? "1" : "0");
+  } catch {
+    /* storage blocked */
+  }
+  status(on ? "Monitoring on: you hear your mic in the headphones. Headphones only (speakers will feed back)." : "Monitoring off.");
+}
+
+/** Store a measured round trip as this mic's latency trim (the browser's own report + trim = measured). */
+function applyLatency(measured, how) {
+  const trim = clamp(Math.round((measured - autoLatency()) * 1000), -200, 600);
+  edit("Calibrate latency", () => (S_().latencyMs = trim), { audioChange: false, redraw: false });
+  $("latency").value = trim;
+  $("latencyOut").textContent = `${trim > 0 ? "+" : ""}${trim} ms`;
+  try {
+    const devId = mic.stream.getAudioTracks()[0]?.getSettings?.().deviceId;
+    localStorage.setItem(`mvb.latency.${devId}`, String(trim));
+  } catch {
+    /* storage blocked */
+  }
+  updateRoundTrip();
+  status(`${how}: your setup is ${Math.round(measured * 1000)} ms behind → trim ${trim > 0 ? "+" : ""}${trim} ms, saved for this mic. New takes now land on the beat. Fix old takes with Timing ◀ ▶ (select a clip).`);
+}
+
+/**
+ * Sync test for headsets (the mic can't hear the headphones, so a loopback test can't work):
+ * 4 lead-in clicks + 12 measured ones; the artist claps or says "ta" on each. The median offset is
+ * how late a take sung "on the beat" really arrives, which is exactly what has to be compensated.
+ */
+async function syncTest() {
+  if (!(await ensureMic())) return;
+  stopPlayback();
+  const gap = 0.6, lead = 4, n = 12;
+  status("Sync test: clap or say “ta” right on every click. 4 clicks to get the feel, then 12 measured…");
+  toast("Clap (or say “ta”) on every click");
+  mic.chunks = [];
+  const t0 = ctx.currentTime + 0.5;
+  mic.node.port.postMessage({ cmd: "start", at: t0 });
+  const lvl = metro.out.gain.value;
+  metro.level = 1;
+  for (let k = 0; k < lead + n; k++) metro.click(t0 + k * gap, k % 4 === 0);
+  await new Promise((r) => setTimeout(r, (0.5 + (lead + n) * gap + 0.6) * 1000));
+  await new Promise((resolve) => {
+    mic.onDone = resolve;
+    mic.node.port.postMessage({ cmd: "stop" });
+  });
+  metro.level = lvl;
+  const data = new Float32Array(mic.chunks.reduce((a, c) => a + c.length, 0));
+  let o = 0;
+  for (const c of mic.chunks) {
+    data.set(c, o);
+    o += c.length;
+  }
+  mic.chunks = [];
+  const r = measureSync(data, FS, { gap, lead, n });
+  if (r.error) return status(`Sync test: ${r.error}`);
+  applyLatency(r.latency, "Sync test");
 }
 
 async function calibrate() {
@@ -350,19 +427,7 @@ async function calibrate() {
     return;
   }
   offs.sort((x, y) => x - y);
-  const measured = offs[Math.floor(offs.length / 2)];
-  const trim = clamp(Math.round((measured - autoLatency()) * 1000), -200, 200);
-  edit("Calibrate latency", () => (S_().latencyMs = trim), { audioChange: false, redraw: false });
-  $("latency").value = trim;
-  $("latencyOut").textContent = `${trim > 0 ? "+" : ""}${trim} ms`;
-  try {
-    const devId = mic.stream.getAudioTracks()[0]?.getSettings?.().deviceId;
-    localStorage.setItem(`mvb.latency.${devId}`, String(trim));
-  } catch {
-    /* storage blocked */
-  }
-  updateRoundTrip();
-  status(`Calibrated: measured ${Math.round(measured * 1000)} ms round trip → trim ${trim} ms (saved for this mic).`);
+  applyLatency(offs[Math.floor(offs.length / 2)], "Loopback test");
 }
 
 // ---------------------------------------------------------------- transcription
@@ -612,6 +677,9 @@ function seek(t) {
   const was = !!ui.playing;
   stopPlayback(false);
   ui.playhead = Math.max(0, t);
+  // Bring the playhead into view if it jumped off screen.
+  const vis = viewWidth() / ui.view.pps;
+  if (ui.playhead < ui.view.start || ui.playhead > ui.view.start + vis) scrollViewTo(ui.playhead - vis * 0.1);
   drawPlayhead();
   if (was) startPlayback(ui.playhead);
 }
@@ -1798,6 +1866,20 @@ function renderLanesOnly() {
     c._draw?.(g, w, h);
   }
   drawPlayhead();
+  updateHScroll();
+}
+// Timeline scroll bar: the thumb is the visible window over the whole song.
+const scrollSpan = () => Math.max(projectEnd() + 4, ui.view.start + viewWidth() / ui.view.pps, 30);
+function updateHScroll() {
+  const bar = $("hscroll"), th = $("hthumb");
+  const W = bar.clientWidth, total = scrollSpan(), vis = viewWidth() / ui.view.pps;
+  th.style.width = `${Math.max(24, (vis / total) * W)}px`;
+  th.style.left = `${Math.min(W - th.offsetWidth, (ui.view.start / total) * W)}px`;
+}
+function scrollViewTo(t) {
+  ui.view.start = Math.max(0, t);
+  ui.view.fit = false;
+  renderLanesOnly();
 }
 
 function drawTrack(g, w, h, t, proc) {
@@ -1966,10 +2048,26 @@ function updateClipInsp() {
   const c = t?.clips.find((x) => x.id === ui.selClip);
   $("clipInsp").hidden = !c;
   if (!c) return;
+  const tm = t.timingMs || 0;
+  $("trackTimingOut").textContent = `${tm > 0 ? "+" : ""}${tm} ms`;
   $("clipGain").value = c.gainDb || 0;
   $("clipGainOut").textContent = `${(c.gainDb || 0).toFixed(1)} dB`;
   $("clipFadeIn").value = Math.round((c.fadeIn || 0) * 1000);
   $("clipFadeOut").value = Math.round((c.fadeOut || 0) * 1000);
+}
+/** Slide every clip's audio on the selected track earlier (−) or later (+); clip edges stay put. */
+function nudgeTrackTiming(ms) {
+  const t = trackById(ui.selTrack);
+  if (!t) return toast("Select a clip on the track first.");
+  history.push(session, `${t.name} timing`, `timing:${t.id}`);
+  for (const c of t.clips) c.shift = (c.shift || 0) + ms / 1000;
+  t.timingMs = Math.round(((t.timingMs || 0) + ms) * 10) / 10;
+  markStale();
+  save();
+  renderLanesOnly();
+  updateClipInsp();
+  updateUndo();
+  status(`${t.name}: audio ${t.timingMs > 0 ? "+" : ""}${t.timingMs} ms ${t.timingMs < 0 ? "earlier" : "later"} than recorded. Press Space to check it against the beat.`);
 }
 function splitAtPlayhead() {
   const t = trackById(ui.selTrack);
@@ -2597,8 +2695,10 @@ function bindControls() {
   $("btnCancel").onclick = () => ui.cancel && (ui.cancel.cancelled = true);
   $("btnMic").onclick = ensureMic;
   $("micSelect").onchange = switchMic;
-  $("monitor").onchange = (e) => mic.monitor.gain.setTargetAtTime(e.target.checked ? 1 : 0, ctx.currentTime, 0.01);
+  $("monitor").onchange = (e) => toggleMonitor(e.target.checked);
+  $("btnMonitor").onclick = () => toggleMonitor(!$("btnMonitor").classList.contains("on"));
   $("btnCalibrate").onclick = calibrate;
+  $("btnSync").onclick = syncTest;
   $("btnLoop").onclick = () => edit(session.loop.on ? "Loop off" : "Loop on", () => (session.loop.on = !session.loop.on), { audioChange: false });
   $("btnClick").onclick = () => edit("Click", () => (s().click = !s().click), { audioChange: false });
   $("btnPunch").onclick = () => {
@@ -2679,6 +2779,28 @@ function bindControls() {
   $("btnMarker").onclick = () => addMarker();
   $("btnZoomIn").onclick = () => zoom(1.5);
   $("btnZoomOut").onclick = () => zoom(1 / 1.5);
+  $("btnToStart").onclick = returnToZero;
+  $("nudgeEarly").onclick = (e) => nudgeTrackTiming(e.shiftKey ? -1 : -10);
+  $("nudgeLate").onclick = (e) => nudgeTrackTiming(e.shiftKey ? 1 : 10);
+  {
+    const bar = $("hscroll"), th = $("hthumb");
+    bar.onpointerdown = (e) => {
+      const W = bar.clientWidth, total = scrollSpan();
+      if (e.target !== th) {
+        // Click on the track: centre the view there.
+        scrollViewTo(((e.clientX - bar.getBoundingClientRect().left) / W) * total - viewWidth() / ui.view.pps / 2);
+        return;
+      }
+      const x0 = e.clientX, s0 = ui.view.start;
+      bar.setPointerCapture(e.pointerId);
+      bar.classList.add("drag");
+      bar.onpointermove = (ev) => scrollViewTo(s0 + ((ev.clientX - x0) / W) * total);
+      bar.onpointerup = () => {
+        bar.onpointermove = bar.onpointerup = null;
+        bar.classList.remove("drag");
+      };
+    };
+  }
   $("btnFit").onclick = fitView;
   $("btnAddTrack").onclick = () => ($("addMenu").hidden = !$("addMenu").hidden);
   document.querySelectorAll("#addMenu button").forEach((b) => (b.onclick = () => {
@@ -2903,6 +3025,15 @@ function bindControls() {
     if (el && el.title) showHint(esc(el.title).replace(/^([^:·]{2,40})(:|·)/, "<b>$1</b>$2"));
     else if (e.target.closest?.(".lane canvas")) showHint();
   });
+  // A mouse click must not leave a button focused: Enter (Stop) or Space would "press" it again,
+  // e.g. one click on + Marker turned every Stop into a new marker. Keyboard users (Tab) keep focus.
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest?.("button");
+    if (b && e.detail > 0) b.blur();
+  });
+  document.addEventListener("change", (e) => {
+    if (e.target.matches?.("select, input[type=checkbox], input[type=range]")) e.target.blur();
+  });
   // Keyboard map (never hijacks typing).
   window.addEventListener("keydown", (e) => {
     if (e.target.matches("input, textarea, select")) return;
@@ -3017,4 +3148,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, automix, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { get session() { return session; }, ui, audio, mic, automix, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };

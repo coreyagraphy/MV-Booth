@@ -53,6 +53,7 @@
         <div class="chips">
           <button class="chip tog-chip" id="btnLoop" title="Loop playback / loop record (L)">⟲ Loop</button>
           <button class="chip tog-chip" id="btnClick" title="Metronome (C)">♪ Click</button>
+          <button class="chip tog-chip" id="btnMonitor" title="Monitor: hear your own voice in your headphones while you record (headphones only, or it will feed back)">🎧 Monitor</button>
           <button class="chip tog-chip punch" id="btnPunch" title="Punch-in recording on the armed track (P). Shift-drag the ruler to set the range.">⏺ Punch</button>
           <button class="chip" id="btnTap" title="Tap tempo (T)">Tap</button>
           <span class="chip" id="chipKey">Key auto</span>
@@ -107,8 +108,11 @@
             <label class="tb-field">Gain <input type="range" id="clipGain" min="-24" max="12" step="0.5" /><output id="clipGainOut"></output></label>
             <label class="tb-field">Fade in <input type="number" id="clipFadeIn" min="0" max="5000" step="10" />ms</label>
             <label class="tb-field">Fade out <input type="number" id="clipFadeOut" min="0" max="5000" step="10" />ms</label>
+            <span class="tb-field" title="Track timing: slide this whole track's audio earlier or later without moving the clips. Use it when a take landed off the beat.">Timing
+              <button class="tb" id="nudgeEarly" title="Slide the track's audio 10 ms earlier (Shift: 1 ms)">◀</button><output id="trackTimingOut">0 ms</output><button class="tb" id="nudgeLate" title="Slide the track's audio 10 ms later (Shift: 1 ms)">▶</button></span>
           </div>
           <span class="sep"></span>
+          <button class="tb" id="btnToStart" title="Back to the start of the song (Home)">⇤ Start</button>
           <button class="tb" id="btnZoomOut" title="Zoom out (−)">−</button>
           <button class="tb" id="btnZoomIn" title="Zoom in (+)">+</button>
           <button class="tb" id="btnFit" title="Fit the session (F)">Fit</button>
@@ -124,6 +128,7 @@
             <p>Drag an instrumental (or all its stems at once) anywhere here, add a track, arm it and press <b>R</b>. Every pass becomes a take you can comp. <b>Automix</b> tunes, aligns, doubles, mixes and masters it.</p>
           </div>
         </div>
+        <div class="hscroll" id="hscroll" title="Drag to scroll through the song · click to jump there"><div class="hthumb" id="hthumb"></div></div>
       </section>
 
       <aside class="rail">
@@ -173,13 +178,14 @@
             <label class="field"><span>Microphone</span><select id="micSelect"><option value="">Default input</option></select></label>
             <div class="row">
               <button id="btnMic" class="btn">Enable mic</button>
-              <label class="check"><input type="checkbox" id="monitor" /> Monitor (headphones)</label>
+              <label class="check" title="Hear your own voice in your headphones (same as 🎧 Monitor at the top)"><input type="checkbox" id="monitor" /> Monitor (headphones)</label>
             </div>
             <label class="field"><span>Input gain <output id="inGainOut">0 dB</output></span><input type="range" id="inGain" min="-60" max="24" step="0.5" /></label>
             <h3>Latency</h3>
-            <label class="field"><span>Latency trim <output id="latencyOut">0 ms</output></span><input type="range" id="latency" min="-200" max="200" step="1" /></label>
-            <div class="row"><button id="btnCalibrate" class="btn">Auto-calibrate</button><span class="muted small" id="rtOut">Round trip: —</span></div>
-            <p class="muted small">Calibrate: hold your headphones to the mic (or use speakers). The booth plays four clicks and measures when they come back.</p>
+            <p class="explain"><b>Takes landing off the beat?</b> Run the <b>Sync test</b> once per headset/mic: put your headphones on, press it, and clap (or say "ta") on every click. The booth measures how late your setup really is and lines every future take up with the beat. Already recorded? Select a clip and use <b>Timing ◀ ▶</b> in the toolbar.</p>
+            <div class="row"><button id="btnSync" class="btn" title="Headphones on: clap or say 'ta' on each of the 12 clicks">Sync test (clap along)</button><button id="btnCalibrate" class="btn" title="No headset: speakers on (or hold the headphones to the mic), stay quiet">Loopback test</button></div>
+            <label class="field"><span>Latency trim <output id="latencyOut">0 ms</output></span><input type="range" id="latency" min="-200" max="600" step="1" /></label>
+            <span class="muted small" id="rtOut">Round trip: —</span>
             <h3>Import</h3>
             <div class="row">
               <button id="btnImportBeat" class="btn" title="One beat file, or select all the stems (drums, 808, melody…) at once">Import beat / stems</button>
