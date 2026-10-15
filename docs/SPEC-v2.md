@@ -116,7 +116,7 @@ A clip plays take audio at source time `t − shift − take.at` for timeline `t
 
 ## 4. Verification (2.1 suite; 2.2 adds the punch and studio-tune suites; 2.4 the song/clean suite; 2.5 the stems suite)
 
-All suites now live in `tests/` and run with `cd tests && npm install && npm test` (lint + declick, daw, punch, ux, song, stems, fixes, single; `npm run test:all` adds the backend studio suite). 2.5.1 adds the `fixes` suite (9 checks) for the audit fixes: short ad-lib loudness, a clip starting before 0:00, undo refused while recording, save flushed on close, duplicate-safe purge.
+All suites now live in `tests/` and run with `cd tests && npm install && npm test` (lint + declick, daw, punch, ux, song, stems, fixes, single; `npm run test:all` adds the backend studio suite). 2.5.2 adds the `dsp` suite (FFT vs a reference DFT, pitch accuracy, LUFS at 48 and 44.1 kHz, true peak, de-noise behaviour) and `tests/bench.mjs` (3-minute song timing). 2.5.1 adds the `fixes` suite (9 checks) for the audit fixes: short ad-lib loudness, a clip starting before 0:00, undo refused while recording, save flushed on close, duplicate-safe purge.
 
 The browser test drives the real UI in headless Chromium with a simulated mic. Twenty-four checks pass with zero page errors:
 - beat import + BPM detect, arm, ruler loop drag
@@ -131,6 +131,16 @@ The browser test drives the real UI in headless Chromium with a simulated mic. T
 2.5 stems suite (18 checks): three stems imported in one go with roles guessed, BPM from the drums, role change + undo, mute leaves a stem out of the mix, report treats each stem by role, master −14.2 LUFS / −1.0 dBTP, stem export = vocal + 3 beat stems with the 808 folded to exact mono, solo, one mixer strip per stem, remove + undo, persistence after reload.
 
 2.4 song/clean suite (12 checks): checklist order and next-step highlight, section markers, clean settings stored per track, cleaned take added with clips swapped and the raw take bit-identical, report lines for breaths / pop / de-click / hum, undo, master tone/width/ceiling applied (−14.2 LUFS, −2.0 dBTP with a −2 ceiling). De-click bench: 0 false triggers on two clean 12 s vocals; 20–23 of 30 injected clicks repaired (the rest are left alone because a repair would move the audio more than the click); median repair +8.5 to +9.2 dB.
+
+### Performance (2.5.2, 3-minute song, lead + recorded double + AI doubles + beat, headless Chromium)
+
+| | Before | After |
+|---|---|---|
+| Automix, natural tune + AI doubles | 92 s | 68 s |
+| Automix, tune/align/doubles off | 53 s | 40 s |
+| Full UI re-render | 18 ms | 13 ms |
+
+How: twiddle-outer FFT loop order (−25–30 %, bit-identical); two real frames per complex FFT in pitch tracking (3 → 2 transforms per frame, identical f0), de-noise (2× faster, ≤1e-7 difference) and vocal analysis; fused K-weighting; the engine's YIN pitch reused for the low-cut decision; waveforms drawn as one path with one glow; canvases resized only when their size changes; hidden side panels rebuilt when opened. Rejected: reusing the double's pitch after alignment (5 s faster but alignment got worse: 9 → 13 cents, ±5 ms).
 
 ## 5. Backend contract (as built, 2.2)
 

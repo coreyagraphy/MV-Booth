@@ -100,7 +100,7 @@ export async function runEngine({ tracks, beats = [], fs, mode, settings, profil
     const r = await renderVocal(t, pr.x, fs, mode, (p) => {
       const g = (i + p) / all.length;
       stage(p < 0.6 ? "clean" : p < 0.9 ? "tone" : "dynamics", g, `Engineering ${t.name}`);
-    }, { profile, stages: { clean: st.clean, tone: st.tone, dynamics: st.dynamics }, clean: t.clean });
+    }, { profile, stages: { clean: st.clean, tone: st.tone, dynamics: st.dynamics }, clean: t.clean, f0: t.virtual ? null : pr.f0Out });
     r.report = [...pr.notes, ...r.report];
     r.pitch = { f0: pr.pitch.f0, f0Out: pr.f0Out, target: pr.target };
     processed.set(t.id, r);

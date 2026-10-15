@@ -52,33 +52,40 @@ export async function trackPitch(x, fs, onProgress) {
   const gate = Math.max(percentile(rmsDb, 0.95) - 40, -85);
 
   for (let f = 0; f < frames; f++) {
+    if (f % 1500 === 0) {
+      // Yield on every 1500th frame, voiced or not, so long silences don't freeze the UI.
+      onProgress?.(f / frames);
+      await tick();
+    }
     if (rmsDb[f] < gate) continue;
     const start = f * HOP - (W >> 1);
-    are.fill(0); aim.fill(0); bre.fill(0); bim.fill(0);
+    are.fill(0); aim.fill(0);
     sq[0] = 0;
+    // Two real signals in one complex FFT: a (the Wi-sample window) in re, b (the W-sample span) in im.
     for (let i = 0; i < W; i++) {
       const v = x[start + i] || 0;
-      bre[i] = v;
+      aim[i] = v;
       if (i < Wi) are[i] = v;
       sq[i + 1] = sq[i] + v * v;
     }
     fft(are, aim);
-    fft(bre, bim);
     for (let k = 0; k < Nfft; k++) {
-      // conj(A) * B
-      const r = are[k] * bre[k] + aim[k] * bim[k];
-      const i = are[k] * bim[k] - aim[k] * bre[k];
-      are[k] = r;
-      aim[k] = i;
+      // Unpack A = (Z[k] + conj Z[−k]) / 2, B = (Z[k] − conj Z[−k]) / 2i, then conj(A)·B.
+      const m = (Nfft - k) & (Nfft - 1);
+      const zr = are[k], zi = aim[k], nr = are[m], ni = aim[m];
+      const ar = 0.5 * (zr + nr), ai = 0.5 * (zi - ni);
+      const br = 0.5 * (zi + ni), bi = -0.5 * (zr - nr);
+      bre[k] = ar * br + ai * bi;
+      bim[k] = ar * bi - ai * br;
     }
-    fft(are, aim, true);
+    fft(bre, bim, true);
     const e0 = sq[Wi];
     if (e0 < 1e-9) continue;
     d[0] = 0;
     let run = 0;
     let best = -1;
     for (let tau = 1; tau <= tauMax; tau++) {
-      const v = e0 + (sq[tau + Wi] - sq[tau]) - 2 * are[tau];
+      const v = e0 + (sq[tau + Wi] - sq[tau]) - 2 * bre[tau];
       run += v;
       d[tau] = run > 0 ? (v * tau) / run : 1;
     }
@@ -95,10 +102,6 @@ export async function trackPitch(x, fs, onProgress) {
     const shift = den !== 0 ? clamp((0.5 * (a - c)) / den, -1, 1) : 0;
     f0[f] = fs / (best + shift);
     conf[f] = 1 - b;
-    if (f % 1500 === 0) {
-      onProgress?.(f / frames);
-      await tick();
-    }
   }
   // Kill isolated blips and octave jumps against the local median.
   const out = f0.slice();

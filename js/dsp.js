@@ -58,18 +58,26 @@ export function fft(re, im, inverse = false) {
       im[j] = t;
     }
   }
-  for (let size = 2; size <= n; size <<= 1) {
+  // First stage has a unit twiddle.
+  for (let a = 0; a < n; a += 2) {
+    const b = a + 1, tr = re[b], ti = im[b];
+    re[b] = re[a] - tr;
+    im[b] = im[a] - ti;
+    re[a] += tr;
+    im[a] += ti;
+  }
+  // Twiddle-outer loop order: each twiddle is loaded once per stage, no branch per butterfly.
+  const sg = inverse ? -1 : 1;
+  for (let size = 4; size <= n; size <<= 1) {
     const half = size >> 1;
     const step = n / size;
-    for (let i = 0; i < n; i += size) {
-      for (let j = 0; j < half; j++) {
-        const k = j * step;
-        const wr = cos[k];
-        const wi = inverse ? -sin[k] : sin[k];
-        const a = i + j;
-        const b = a + half;
-        const tr = re[b] * wr - im[b] * wi;
-        const ti = re[b] * wi + im[b] * wr;
+    for (let j = 0; j < half; j++) {
+      const wr = cos[j * step];
+      const wi = sg * sin[j * step];
+      for (let a = j; a < n; a += size) {
+        const b = a + half, xr = re[b], xi = im[b];
+        const tr = xr * wr - xi * wi;
+        const ti = xr * wi + xi * wr;
         re[b] = re[a] - tr;
         im[b] = im[a] - ti;
         re[a] += tr;
@@ -78,9 +86,10 @@ export function fft(re, im, inverse = false) {
     }
   }
   if (inverse) {
+    const s = 1 / n;
     for (let i = 0; i < n; i++) {
-      re[i] /= n;
-      im[i] /= n;
+      re[i] *= s;
+      im[i] *= s;
     }
   }
 }
@@ -131,10 +140,11 @@ export function biquad(type, f0, fs, q = Math.SQRT1_2, gainDb = 0) {
 
 export function filter(x, co) {
   const y = new Float32Array(x.length);
+  const { b0, b1, b2, a1, a2 } = co; // locals: no property lookups in the per-sample loop
   let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
   for (let i = 0; i < x.length; i++) {
     const xi = x[i];
-    const v = co.b0 * xi + co.b1 * x1 + co.b2 * x2 - co.a1 * y1 - co.a2 * y2;
+    const v = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
     x2 = x1;
     x1 = xi;
     y2 = y1;
@@ -168,8 +178,29 @@ function kWeighting(fs) {
 }
 
 export function kWeight(x, fs) {
-  const [a, b] = kWeighting(fs);
-  return filter(filter(x, a), b);
+  // Both stages in one pass, bit-identical to filter(filter(x, shelf), hp): the shelf output is
+  // rounded to float32 between stages exactly as the intermediate Float32Array did.
+  const [A, B] = kWeighting(fs);
+  const { b0: ab0, b1: ab1, b2: ab2, a1: aa1, a2: aa2 } = A;
+  const { b0: bb0, b1: bb1, b2: bb2, a1: ba1, a2: ba2 } = B;
+  const y = new Float32Array(x.length);
+  let x1 = 0, x2 = 0, u1 = 0, u2 = 0, m1 = 0, m2 = 0, v1 = 0, v2 = 0;
+  for (let i = 0; i < x.length; i++) {
+    const xi = x[i];
+    const u = ab0 * xi + ab1 * x1 + ab2 * x2 - aa1 * u1 - aa2 * u2;
+    x2 = x1;
+    x1 = xi;
+    u2 = u1;
+    u1 = u;
+    const mi = Math.fround(u);
+    const v = bb0 * mi + bb1 * m1 + bb2 * m2 - ba1 * v1 - ba2 * v2;
+    m2 = m1;
+    m1 = mi;
+    v2 = v1;
+    v1 = v;
+    y[i] = v;
+  }
+  return y;
 }
 
 /** Integrated loudness (LUFS) of one or more channels. */
@@ -180,14 +211,28 @@ export function integratedLoudness(channels, fs) {
   const len = weighted[0].length;
   if (len < block) return -Infinity;
   const z = [];
-  for (let start = 0; start + block <= len; start += hop) {
-    let sum = 0;
+  if (block === 4 * hop) {
+    // 400 ms blocks at 75% overlap = four consecutive 100 ms chunks: sum each chunk once.
+    const chunks = Math.floor(len / hop);
+    const e = new Float64Array(chunks);
     for (const w of weighted) {
-      let ms = 0;
-      for (let i = start; i < start + block; i++) ms += w[i] * w[i];
-      sum += ms / block;
+      for (let c = 0; c < chunks; c++) {
+        let ms = 0;
+        for (let i = c * hop, end = i + hop; i < end; i++) ms += w[i] * w[i];
+        e[c] += ms / block;
+      }
     }
-    z.push(sum);
+    for (let c = 0; c + 4 <= chunks; c++) z.push(e[c] + e[c + 1] + e[c + 2] + e[c + 3]);
+  } else {
+    for (let start = 0; start + block <= len; start += hop) {
+      let sum = 0;
+      for (const w of weighted) {
+        let ms = 0;
+        for (let i = start; i < start + block; i++) ms += w[i] * w[i];
+        sum += ms / block;
+      }
+      z.push(sum);
+    }
   }
   const lk = (ms) => -0.691 + 10 * Math.log10(Math.max(ms, 1e-12));
   const abs = z.filter((ms) => lk(ms) > -70);
@@ -297,16 +342,13 @@ export async function denoise(x, fs, { floorDb = -14, onProgress } = {}) {
   const prev = new Float64Array(bins).fill(1);
   const gain = new Float64Array(bins);
   const frames = Math.ceil(x.length / H);
+  // Two frames per complex FFT (frame f in re, f+1 in im): half the transforms, same result.
+  const Ar = new Float64Array(bins), Ai = new Float64Array(bins), Br = new Float64Array(bins), Bi = new Float64Array(bins);
+  const Ga = new Float64Array(bins), Gb = new Float64Array(bins);
   let removedSum = 0;
-  for (let f = 0; f < frames; f++) {
-    const start = f * H;
-    for (let i = 0; i < N; i++) {
-      re[i] = (x[start + i] || 0) * win[i];
-      im[i] = 0;
-    }
-    fft(re, im);
+  const gainsFor = (sr, si, G) => {
     for (let k = 0; k < bins; k++) {
-      const p = re[k] * re[k] + im[k] * im[k] + 1e-20;
+      const p = sr[k] * sr[k] + si[k] * si[k] + 1e-20;
       const g = Math.max(floor, (p - alpha * profile[k]) / p);
       // Open instantly, close slowly: keeps consonant attacks, kills musical noise.
       gain[k] = g > prev[k] ? g : prev[k] * 0.65 + g * 0.35;
@@ -314,18 +356,45 @@ export async function denoise(x, fs, { floorDb = -14, onProgress } = {}) {
     let frameGain = 0;
     for (let k = 0; k < bins; k++) {
       const g = (gain[Math.max(0, k - 1)] + gain[k] + gain[Math.min(bins - 1, k + 1)]) / 3;
-      prev[k] = gain[k];
-      re[k] *= g;
-      im[k] *= g;
-      if (k > 0 && k < N / 2) {
-        re[N - k] = re[k];
-        im[N - k] = -im[k];
-      }
+      G[k] = g;
       frameGain += g;
     }
+    prev.set(gain);
     removedSum += frameGain / bins;
+  };
+  for (let f = 0; f < frames; f += 2) {
+    const sa = f * H, sb = sa + H, hasB = f + 1 < frames;
+    for (let i = 0; i < N; i++) {
+      re[i] = (x[sa + i] || 0) * win[i];
+      im[i] = hasB ? (x[sb + i] || 0) * win[i] : 0;
+    }
+    fft(re, im);
+    for (let k = 0; k < bins; k++) {
+      const m = (N - k) & (N - 1);
+      const zr = re[k], zi = im[k], nr = re[m], ni = im[m];
+      Ar[k] = 0.5 * (zr + nr);
+      Ai[k] = 0.5 * (zi - ni);
+      Br[k] = 0.5 * (zi + ni);
+      Bi[k] = -0.5 * (zr - nr);
+    }
+    gainsFor(Ar, Ai, Ga);
+    if (hasB) gainsFor(Br, Bi, Gb);
+    else Gb.fill(0);
+    // Y = Ga·A + i·Gb·B (both Hermitian), so the inverse gives frame f in re and frame f+1 in im.
+    for (let k = 0; k < bins; k++) {
+      const ar = Ga[k] * Ar[k], ai = Ga[k] * Ai[k], br = Gb[k] * Br[k], bi = Gb[k] * Bi[k];
+      re[k] = ar - bi;
+      im[k] = ai + br;
+      if (k > 0 && k < N / 2) {
+        re[N - k] = ar + bi;
+        im[N - k] = -ai + br;
+      }
+    }
     fft(re, im, true);
-    for (let i = 0; i < N; i++) out[start + i] += (re[i] * win[i]) / 1.5;
+    for (let i = 0; i < N; i++) {
+      out[sa + i] += (re[i] * win[i]) / 1.5;
+      if (hasB) out[sb + i] += (im[i] * win[i]) / 1.5;
+    }
     if (onProgress && f % 2000 === 0) {
       onProgress(f / frames);
       await tick();
@@ -533,7 +602,7 @@ export function truePeak(channels) {
       const w = 0.5 + 0.5 * Math.cos((Math.PI * x) / (taps + 1));
       h.push(((Math.sin(Math.PI * x) / (Math.PI * x)) || 1) * w);
     }
-    return h;
+    return Float64Array.from(h);
   });
   const sp = samplePeak(channels);
   const near = sp * 0.5;
@@ -555,9 +624,9 @@ export function truePeak(channels) {
 // ---------------------------------------------------------------- de-click
 
 /**
- * Remove mouth clicks / digital ticks: isolated spikes in the first difference
- * (much sharper than anything a voice does) are replaced by a cubic bridge.
- * Consonant transients last several ms and are left alone.
+ * Remove mouth clicks / digital ticks: isolated, non-periodic spikes in a high-passed residual
+ * are filled by least-squares AR interpolation (bridgeAR), and a repair that would move the audio
+ * more than the click itself is undone. Consonant transients last several ms and are left alone.
  */
 // Autocorrelation (lags 0..order) of x[a, b), added into R.
 function acorr(x, a, b, order, R) {

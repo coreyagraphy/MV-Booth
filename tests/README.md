@@ -14,6 +14,7 @@ node run.mjs stems song           # just some suites
 
 | Suite | Covers |
 | --- | --- |
+| dsp | FFT vs reference DFT, pitch accuracy, LUFS (48 and 44.1 kHz), true peak, de-noise behaviour |
 | declick | false-click rate on clean takes, injected clicks found, repair never worse than the click |
 | daw | transport, loop record, comp, clips, mixer, prompter, Automix loudness, WAV/MP3 export, sessions |
 | punch | punch-in pre/post-roll, sample-exact boundaries, crossfades |
@@ -23,5 +24,7 @@ node run.mjs stems song           # just some suites
 | fixes | audit fixes: short ad-lib loudness, clip before 0:00, undo blocked while recording, save on close, duplicate-safe purge |
 | single | the self-contained `dist/index.html` alone (Netlify single-file upload) |
 | studio | Studio tune through the local backend (needs `backend\start-backend.bat`) |
+
+`node bench.mjs` times Automix on a 3-minute song (tiles the fixtures) and the timeline redraw; `PROFILE=1` adds a per-function profile.
 
 Fixtures (synthetic vocal, beat, double, drum/808/keys stems) are generated into `tests/.out/`.

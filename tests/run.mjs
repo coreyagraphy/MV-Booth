@@ -11,7 +11,7 @@ const root = join(here, "..");
 const out = join(here, ".out");
 const args = process.argv.slice(2);
 const withBackend = args.includes("--backend");
-const SUITES = ["declick", "daw", "punch", "ux", "song", "stems", "fixes", "single", ...(withBackend ? ["studio"] : [])];
+const SUITES = ["dsp", "declick", "daw", "punch", "ux", "song", "stems", "fixes", "single", ...(withBackend ? ["studio"] : [])];
 const pick = args.filter((a) => !a.startsWith("--"));
 const run = pick.length ? SUITES.filter((s) => pick.includes(s)) : SUITES;
 const APP_PORT = 5199, SINGLE_PORT = 5198;
@@ -23,9 +23,10 @@ if (!existsSync(join(out, "double.wav"))) node(join(here, "fixtures/gen-double.m
 if (!existsSync(join(out, "Drums.wav"))) node(join(here, "fixtures/gen-stems.mjs"));
 
 let failed = 0;
-const lint = spawnSync(join(here, "node_modules/.bin/eslint"), ["--no-config-lookup", "-c", join(here, "eslint.config.mjs"), ...["dsp", "session", "metro", "mp3", "tune", "doubles", "automix", "engine", "app", "store", "wav"].map((m) => join(root, "js", `${m}.js`)).filter(existsSync)], { encoding: "utf8" });
-console.log(lint.status === 0 ? "PASS lint" : `FAIL lint\n${lint.stdout || lint.stderr || lint.error}`);
-if (lint.status !== 0) failed++;
+const lint = spawnSync(process.execPath, [join(here, "lint.mjs")], { encoding: "utf8" });
+const linted = lint.status === 0;
+console.log(linted ? `PASS ${lint.stdout.trim()}` : `FAIL lint\n${lint.stdout || lint.stderr}`);
+if (!linted) failed++;
 
 const app = spawn(process.execPath, [join(root, "serve.mjs")], { env: { ...process.env, PORT: APP_PORT, AUTO_EXIT: "0", NO_OPEN: "1" }, stdio: "ignore" });
 let single = null;

@@ -86,7 +86,7 @@ const HOP = 512; // analysis hop (~10.7 ms @ 48 kHz)
 
 // ---------------------------------------------------------------- 1. analysis
 
-export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, nrFloorDb = null } = {}) {
+export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, nrFloorDb = null, f0 = null } = {}) {
   const preset = MODES[mode];
   const nr = skipNR
     ? { out: raw, snrDb: NaN, applied: false, reductionDb: 0 }
@@ -113,20 +113,12 @@ export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, 
   let sibCentroidNum = 0;
   let sibCentroidDen = 0;
 
-  for (let f = 0; f < frames; f++) {
-    const start = f * HOP - N / 2 + HOP / 2;
-    let tsum = 0;
-    for (let i = 0; i < N; i++) {
-      const s = x[start + i] || 0;
-      re[i] = s * win[i];
-      im[i] = 0;
-      tsum += s * s;
-    }
+  const count = kHi - kLo + 1;
+  const frameStats = (f, P, tsum) => {
     rms[f] = 10 * Math.log10(Math.max(tsum / N, 1e-12));
-    fft(re, im);
     let total = 1e-20, sib = 1e-20, logSum = 0, linSum = 0, cnum = 0, low = 1e-20;
     for (let k = 1; k <= N / 2; k++) {
-      const p = re[k] * re[k] + im[k] * im[k];
+      const p = P[k];
       total += p;
       if (k <= kP) low += p;
       if (k >= kS0 && k <= kS1) {
@@ -139,7 +131,6 @@ export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, 
         linSum += m;
       }
     }
-    const count = kHi - kLo + 1;
     flat[f] = Math.exp(logSum / count) / (linSum / count);
     sibDb[f] = 10 * Math.log10(sib / N);
     sibRatio[f] = 10 * Math.log10(sib / total);
@@ -148,6 +139,30 @@ export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, 
       sibCentroidNum += cnum;
       sibCentroidDen += sib;
     }
+  };
+  // Two frames per complex FFT (frame f in re, f+1 in im), unpacked into their power spectra.
+  const PA = new Float64Array(N / 2 + 1), PB = new Float64Array(N / 2 + 1);
+  for (let f = 0; f < frames; f += 2) {
+    const sa = f * HOP - N / 2 + HOP / 2, sb = sa + HOP, hasB = f + 1 < frames;
+    let ta = 0, tb = 0;
+    for (let i = 0; i < N; i++) {
+      const a = x[sa + i] || 0;
+      const b = hasB ? x[sb + i] || 0 : 0;
+      re[i] = a * win[i];
+      im[i] = b * win[i];
+      ta += a * a;
+      tb += b * b;
+    }
+    fft(re, im);
+    for (let k = 0; k <= N / 2; k++) {
+      const m = (N - k) & (N - 1);
+      const ar = 0.5 * (re[k] + re[m]), ai = 0.5 * (im[k] - im[m]);
+      const br = 0.5 * (im[k] + im[m]), bi = -0.5 * (re[k] - re[m]);
+      PA[k] = ar * ar + ai * ai;
+      PB[k] = br * br + bi * bi;
+    }
+    frameStats(f, PA, ta);
+    if (hasB) frameStats(f + 1, PB, tb);
     if (f % 4000 === 0) {
       onProgress?.(0.6 + (f / frames) * 0.3);
       await tick();
@@ -190,11 +205,16 @@ export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, 
   const dynRange = activeRms.length ? percentile(activeRms, 0.95) - percentile(activeRms, 0.3) : 6;
 
   // Pitch: sample voiced frames for F0 statistics.
+  // Reuses the engine's YIN track when it has one (more accurate, and no second pass over the take).
   const f0s = [];
-  for (let f = 0; f < frames; f += 6) {
-    if (active[f] && flat[f] < 0.3) {
-      const v = frameF0(x, f * HOP, fs);
-      if (v) f0s.push(v);
+  if (f0) {
+    for (let f = 0; f < f0.length; f += 6) if (f0[f] > 0) f0s.push(f0[f]);
+  } else {
+    for (let f = 0; f < frames; f += 6) {
+      if (active[f] && flat[f] < 0.3) {
+        const v = frameF0(x, f * HOP, fs);
+        if (v) f0s.push(v);
+      }
     }
   }
   const f0Median = f0s.length ? percentile(f0s, 0.5) : 140;
@@ -332,12 +352,12 @@ function curveToGain(curveDb, extraDb = 0) {
 }
 
 /** Render the processed, panned vocal for one track. */
-export async function renderVocal(track, raw, fs, mode, onProgress, { profile, stages = {}, clean = null } = {}) {
+export async function renderVocal(track, raw, fs, mode, onProgress, { profile, stages = {}, clean = null, f0 = null } = {}) {
   const st = { clean: true, tone: true, dynamics: true, ...stages };
   const cl = cleanOptions(clean, mode);
   let clicks = 0;
   if (st.clean && cl.declick) ({ out: raw, clicks } = declick(raw, fs));
-  const an = await analyseVocal(raw, fs, mode, (p) => onProgress?.(p * 0.85), { skipNR: !st.clean || !cl.denoise, nrFloorDb: cl.nrFloorDb });
+  const an = await analyseVocal(raw, fs, mode, (p) => onProgress?.(p * 0.85), { skipNR: !st.clean || !cl.denoise, nrFloorDb: cl.nrFloorDb, f0 });
   const preset = MODES[mode];
   const role = ROLES[track.role] ? track.role : "lead";
   const eq = st.tone ? decideEq(an, mode, role, profile) : { hpf: 30, mud: 0, box: 0, presence: 0, air: 0 };
@@ -793,7 +813,6 @@ export async function renderMix({ vocals, beats = [], fs, mode, settings, length
     post = integratedLoudness(lim.channels, fs);
     tp = linToDb(truePeak(lim.channels));
   }
-  post = integratedLoudness(lim.channels, fs);
   const master = new AudioBuffer({ numberOfChannels: 2, length, sampleRate: fs });
   master.copyToChannel(lim.channels[0], 0);
   master.copyToChannel(lim.channels[1], 1);

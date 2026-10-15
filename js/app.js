@@ -1433,6 +1433,8 @@ function drawWave(g, buf, id, bufAt, s, e, top, h, color, glow, norm = true) {
   g.fillStyle = color;
   g.shadowColor = glow;
   g.shadowBlur = 6;
+  // One path, one fill: the glow is blurred once per waveform, not once per pixel column.
+  g.beginPath();
   const x0 = Math.max(0, Math.floor(t2x(s)));
   const x1 = Math.min(viewWidth(), Math.ceil(t2x(e)));
   for (let x = x0; x < x1; x++) {
@@ -1444,17 +1446,26 @@ function drawWave(g, buf, id, bufAt, s, e, top, h, color, glow, norm = true) {
       if (P.mn[i] < a) a = P.mn[i];
       if (P.mx[i] > b) b = P.mx[i];
     }
-    if (ib > ia) g.fillRect(x, mid - b * scale, 1, Math.max(1, (b - a) * scale));
+    if (ib > ia) g.rect(x, mid - b * scale, 1, Math.max(1, (b - a) * scale));
   }
+  g.fill();
   g.shadowBlur = 0;
 }
 
 function prepCanvas(canvas) {
   const w = canvas.clientWidth, h = canvas.clientHeight, dpr = devicePixelRatio || 1;
-  canvas.width = Math.round(w * dpr);
-  canvas.height = Math.round(h * dpr);
+  const W = Math.round(w * dpr), H = Math.round(h * dpr);
   const g = canvas.getContext("2d");
-  g.scale(dpr, dpr);
+  // Re-allocating the bitmap every frame is the expensive part; only resize when the size changed.
+  if (canvas.width !== W || canvas.height !== H) {
+    canvas.width = W;
+    canvas.height = H;
+  } else if (g.reset) g.reset();
+  else {
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, W, H);
+  }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { g, w, h };
 }
 function drawGrid(g, w, h) {
@@ -2182,14 +2193,16 @@ function updateRecView(pos) {
       g.shadowColor = "#ff3b4a";
       g.shadowBlur = 8;
       const mid = h / 2;
+      g.beginPath();
       for (let x = Math.max(0, Math.floor(x0)); x < Math.min(w, xEnd); x++) {
         const a = Math.floor(x2t(x) - at0 >= 0 ? (x2t(x) - at0) / span : 0);
         const b = Math.max(a + 1, Math.floor((x2t(x + 1) - at0) / span));
         let m = 0;
         for (let i = a; i < Math.min(b, recPeaks.length); i++) m = Math.max(m, recPeaks[i]);
         const hh = Math.min(1, m * 1.4) * mid * 0.9;
-        g.fillRect(x, mid - hh, 1, Math.max(1, hh * 2));
+        g.rect(x, mid - hh, 1, Math.max(1, hh * 2));
       }
+      g.fill();
       g.shadowBlur = 0;
       g.fillStyle = "#fff";
       g.font = "600 10px JetBrains Mono, monospace";
@@ -2459,14 +2472,19 @@ function renderAll() {
   $("btnPunch").classList.toggle("on", !!session.punch?.on);
   $("btnSnap").classList.toggle("on", !!S_().snap);
   renderLanes();
-  renderStrips();
-  renderCleanTab();
-  renderSong();
+  // Side panels only rebuild while on screen; a hidden one is rebuilt when its tab opens.
+  for (const [name, fn] of Object.entries(PANELS)) {
+    if (document.querySelector(`.tab.on[data-panel="${name}"]`)) fn();
+    else dirtyPanels.add(name);
+  }
   updateClipInsp();
   updateChips();
   applyMixer();
 }
+const PANELS = { mixer: renderStrips, clean: renderCleanTab, song: renderSong };
+const dirtyPanels = new Set();
 function showTab(name) {
+  if (dirtyPanels.delete(name)) PANELS[name]();
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
   requestAnimationFrame(() => {
@@ -2999,4 +3017,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, automix, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { get session() { return session; }, ui, audio, automix, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
