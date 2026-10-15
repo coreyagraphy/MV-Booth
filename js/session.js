@@ -102,7 +102,7 @@ export function addPunchClip(track, take, pin, pout, xf = 0.01) {
     if (Math.abs(c.end - (pin + h)) < 1e-6) c.fadeOut = xf;
     if (Math.abs(c.start - (pout - h)) < 1e-6) c.fadeIn = xf;
   }
-  track.clips.push({ id: uid(), takeId: take.id, start: pin - h, end: pout + h, shift: 0, gainDb: 0, fadeIn: xf, fadeOut: xf, punch: true });
+  track.clips.push({ id: uid(), takeId: take.id, start: Math.max(0, pin - h), end: pout + h, shift: 0, gainDb: 0, fadeIn: xf, fadeOut: xf, punch: true });
   track.clips.sort((a, b) => a.start - b.start);
 }
 
@@ -130,7 +130,8 @@ export const trackEnd = (track) => (track.clips.length ? Math.max(...track.clips
 export function renderTrack(track, audio, fs) {
   const clips = track.clips.filter((c) => audio.get(c.takeId));
   if (!clips.length) return null;
-  const start = Math.min(...clips.map((c) => c.start));
+  // Nothing plays before 0:00 (a punch at the very start overlaps it by half a crossfade).
+  const start = Math.max(0, Math.min(...clips.map((c) => c.start)));
   const end = Math.max(...clips.map((c) => c.end));
   const out = new Float32Array(Math.ceil((end - start) * fs));
   for (const c of clips) {
@@ -145,7 +146,7 @@ export function renderTrack(track, audio, fs) {
     for (let i = 0; i < n; i++) {
       const si = src0 + i;
       const di = dst0 + i;
-      if (si < 0 || si >= src.length || di >= out.length) continue;
+      if (si < 0 || si >= src.length || di < 0 || di >= out.length) continue;
       let w = g;
       if (i < fi) w *= i / fi;
       if (n - i < fo) w *= (n - i) / fo;
@@ -203,19 +204,25 @@ export async function listSessions() {
   const cutoff = Date.now() - TRASH_DAYS * 864e5;
   const keep = idx.filter((s) => !s.deletedAt || s.deletedAt > cutoff);
   if (keep.length !== idx.length) {
-    for (const s of idx.filter((x) => !keep.includes(x))) await purgeSession(s.id);
+    // Duplicated sessions share take audio, so only delete audio no surviving session uses.
+    const inUse = new Set();
+    for (const row of keep) {
+      const other = await store.get(`session:${row.id}`);
+      if (other) for (const id of audioIds(other)) inUse.add(id);
+    }
+    for (const s of idx.filter((x) => !keep.includes(x))) await purgeSession(s.id, inUse);
     await store.set("sessions", keep);
   }
   return keep;
 }
 
-async function purgeSession(id) {
+function audioIds(s) {
+  migrateBeats(s);
+  return [...s.tracks.flatMap((t) => t.takes.map((tk) => tk.id)), ...s.beats.map((b) => b.id)];
+}
+async function purgeSession(id, inUse = new Set()) {
   const s = await store.get(`session:${id}`);
-  if (s) {
-    for (const t of s.tracks) for (const tk of t.takes) await store.del(`audio:${tk.id}`);
-    migrateBeats(s);
-    for (const b of s.beats) await store.del(`audio:${b.id}`);
-  }
+  if (s) for (const a of audioIds(s)) if (!inUse.has(a)) await store.del(`audio:${a}`);
   await store.del(`session:${id}`);
 }
 

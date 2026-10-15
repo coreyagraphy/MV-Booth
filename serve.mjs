@@ -40,7 +40,12 @@ function openWindow() {
 }
 
 const server = createServer(async (req, res) => {
-  const path = normalize(decodeURIComponent(new URL(req.url, "http://x").pathname)).replace(/^([/\\])+/, "");
+  let path;
+  try {
+    path = normalize(decodeURIComponent(new URL(req.url, "http://x").pathname)).replace(/^([/\\])+/, "");
+  } catch {
+    return res.writeHead(400).end("Bad request"); // malformed %-escape: never let it crash the booth
+  }
   if (path === "__alive") {
     lastPing = Date.now();
     return res.writeHead(204, { "Cache-Control": "no-store" }).end();

@@ -23,9 +23,12 @@ async function run(mode, fn) {
       const req = fn(tx.objectStore(STORE));
       tx.oncomplete = () => resolve(req?.result);
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error("storage write aborted"));
     });
   } catch (err) {
     console.warn("storage unavailable", err);
+    // A failed write (disk full, quota) must reach the caller so it can warn; reads just come back empty.
+    if (mode === "readwrite") throw err;
     return undefined;
   }
 }

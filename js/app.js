@@ -22,7 +22,7 @@ const tapper = new TapTempo();
 
 const ui = {
   ab: "A", selTrack: null, selClip: null, playhead: 0, playStart: 0,
-  playing: null, recording: null, busy: false, run: null, stale: false,
+  playing: null, recording: null, busy: false, job: null, run: null, stale: false,
   key: null, profile: null, view: { start: 0, pps: 30, fit: true }, lyricLine: 0, cancel: null,
   stageState: {},
 };
@@ -131,10 +131,20 @@ async function toMono(buffer) {
 let saveTimer;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => S.saveSession(session), 600);
+  saveTimer = setTimeout(flushSave, 600);
 }
+function flushSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  return S.saveSession(session).catch((err) => toast(`Couldn't save the session: ${err.message}`));
+}
+// Closing the window (or the app auto-exiting) must not drop the last 600 ms of edits.
+addEventListener("pagehide", () => saveTimer && flushSave());
+document.addEventListener("visibilitychange", () => document.hidden && saveTimer && flushSave());
 const saveAudio = (id, buffer) =>
-  store.set(`audio:${id}`, { sampleRate: buffer.sampleRate, channels: Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).slice()) });
+  store
+    .set(`audio:${id}`, { sampleRate: buffer.sampleRate, channels: Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).slice()) })
+    .catch((err) => toast(`Couldn't store audio (is the disk full?): ${err.message}. Export what you need before closing.`));
 async function loadAudio(id) {
   if (audio.has(id)) return audio.get(id);
   const rec = await store.get(`audio:${id}`);
@@ -169,8 +179,16 @@ function applyHistory(r, verb) {
   updateUndo();
   toast(`${verb === "undo" ? "Undid" : "Redid"}: ${r.label}`);
 }
-const undo = () => applyHistory(history.undo(session), "undo");
-const redo = () => applyHistory(history.redo(session), "redo");
+// Undo, redo and session switches swap the whole session object, so they wait for anything
+// that is writing into it: a recording, Automix, or a clean / studio-tune job.
+const busyWith = () => (ui.recording ? "the recording" : ui.busy ? "Automix" : ui.job || null);
+function guardBusy(what) {
+  const b = busyWith();
+  if (b) toast(`Wait for ${b} to finish before ${what}.`);
+  return !!b;
+}
+const undo = () => guardBusy("undoing") || applyHistory(history.undo(session), "undo");
+const redo = () => guardBusy("redoing") || applyHistory(history.redo(session), "redo");
 function updateUndo() {
   $("btnUndo").disabled = !history.undoStack.length;
   $("btnRedo").disabled = !history.redoStack.length;
@@ -505,9 +523,13 @@ function scheduleSegment(a, b, T, sources, { cue }) {
       const s = ctx.createBufferSource();
       s.buffer = buf;
       s.connect(cg);
+      // Source time for timeline s0. Negative = the take starts later than the clip (a take comped
+      // into an earlier section): wait that long instead of playing its first sample early.
       const srcOff = s0 - (c.shift || 0) - take.at;
-      if (srcOff >= buf.duration) continue;
-      s.start(tS, Math.max(0, srcOff), Math.min(e0 - s0, buf.duration - Math.max(0, srcOff)));
+      const wait = Math.max(0, -srcOff);
+      const len = Math.min(e0 - s0 - wait, buf.duration - Math.max(0, srcOff));
+      if (len <= 0.002) continue;
+      s.start(tS + wait, Math.max(0, srcOff), len);
       sources.push(s);
     }
   }
@@ -1117,8 +1139,10 @@ async function previewClean() {
   if (!t) return toast("Select a track first.");
   const src = studioSourceTake(t);
   if (!src || !audio.get(src.id)) return toast("That track has no take to clean.");
+  if (guardBusy("cleaning")) return;
   const x = audio.get(src.id).getChannelData(0);
   $("btnCleanPreview").disabled = true;
+  ui.job = "the cleanup";
   try {
     status(`Cleaning ${src.name}…`);
     const r = await renderVocal({ role: t.type, fx: "clean" }, x, FS, session.mode, (p) => status(`Cleaning ${src.name}… ${Math.round(p * 100)}%`), {
@@ -1139,11 +1163,13 @@ async function previewClean() {
     const take = { id: S.uid(), name: `${src.name.replace(/ · clean$/, "")} · clean`, at: src.at, duration: buffer.duration, best: false, transcript: src.transcript || "", cleaned: true, cleanedFrom: src.id, tuned: src.tuned, cleanReport: r.report.filter((l) => !/^(Voice:|Tone EQ|Vocal rider|Compressor)/.test(l)) };
     audio.set(take.id, buffer);
     saveAudio(take.id, buffer);
+    const tt = trackById(t.id);
+    if (!tt) throw new Error("the track was removed while cleaning");
     edit(`Clean ${src.name}`, () => {
-      t.takes.push(take);
-      for (const c of t.clips) if (c.takeId === src.id) c.takeId = take.id;
-      t.showTakes = true;
-      t.cleanReviewed = true;
+      tt.takes.push(take);
+      for (const c of tt.clips) if (c.takeId === src.id) c.takeId = take.id;
+      tt.showTakes = true;
+      tt.cleanReviewed = true;
     });
     renderCleanTab();
     status(`Cleaned ${src.name} → "${take.name}" is on the track; the raw take is still in the lane. Press Space to listen, or click "Use" on the raw take to compare.`);
@@ -1151,6 +1177,7 @@ async function previewClean() {
     console.error(err);
     toast(`Cleanup failed: ${err.message}`);
   } finally {
+    ui.job = null;
     $("btnCleanPreview").disabled = false;
   }
 }
@@ -1256,7 +1283,9 @@ async function studioTune() {
     key: S_().key === "auto" ? "auto" : +S_().key, scale: S_().scale, retune_ms: st.retuneMs, vibrato: st.vibrato,
     amount: st.amount, formant: st.formant, min_confidence: st.minConf, model: st.model,
   };
+  if (guardBusy("studio-tuning")) return;
   $("btnStudioTune").disabled = true;
+  ui.job = "the studio tune";
   try {
     status(`Sending ${src.name} to the studio tuner…`);
     const fd = new FormData();
@@ -1268,7 +1297,9 @@ async function studioTune() {
     let j;
     for (;;) {
       await new Promise((res) => setTimeout(res, 600));
-      j = await (await fetch(beUrl(`/jobs/${job}`), { cache: "no-store" })).json();
+      const jr = await fetch(beUrl(`/jobs/${job}`), { cache: "no-store" });
+      if (!jr.ok) throw new Error("the backend lost the job (was it restarted?)");
+      j = await jr.json();
       status(`Studio tune · ${Math.round((j.progress || 0) * 100)}% · ${j.message || j.state}`);
       if (j.state === "done" || j.state === "failed") break;
     }
@@ -1278,11 +1309,13 @@ async function studioTune() {
     const take = { id: S.uid(), name: `${src.name.replace(/ · tuned.*$/, "")} · tuned`, at: src.at, duration: buffer.duration, best: false, transcript: src.transcript || "", tuned: true, tunedFrom: src.id, report: j.report };
     audio.set(take.id, buffer);
     saveAudio(take.id, buffer);
+    const tt = trackById(t.id);
+    if (!tt) throw new Error("the track was removed while tuning");
     edit(`Studio-tune ${src.name}`, () => {
-      t.takes.push(take);
+      tt.takes.push(take);
       // Swap the tuned take into every clip that used the source; the original stays in the lane.
-      for (const c of t.clips) if (c.takeId === src.id) c.takeId = take.id;
-      t.showTakes = true;
+      for (const c of tt.clips) if (c.takeId === src.id) c.takeId = take.id;
+      tt.showTakes = true;
     });
     renderStudioReport(take);
     const sm = j.report.summary;
@@ -1292,6 +1325,7 @@ async function studioTune() {
     toast(`Studio tune failed: ${err.message}`);
     status(`Studio tune failed: ${err.message}. Your takes are untouched.`);
   } finally {
+    ui.job = null;
     $("btnStudioTune").disabled = !beOk;
   }
 }
@@ -2340,7 +2374,7 @@ async function renderSessionMenu() {
   m.append(document.createElement("hr"));
   const act = (label, fn) => {
     const b = Object.assign(document.createElement("button"), { textContent: label });
-    b.onclick = fn;
+    b.onclick = () => guardBusy("changing sessions") || fn();
     m.append(b);
   };
   act("+ New session", async () => {
@@ -2382,12 +2416,14 @@ async function renderSessionMenu() {
   }
 }
 async function openSession(id) {
+  if (guardBusy("switching sessions")) return;
   const s = await S.loadSession(id);
   if (!s) return toast("That session couldn't be loaded.");
   await S.saveSession(session);
   await switchTo(s);
 }
 async function switchTo(s) {
+  if (guardBusy("switching sessions")) return;
   stopPlayback(false);
   session = s;
   history.undoStack = [];
@@ -2929,6 +2965,8 @@ if (["localhost", "127.0.0.1"].includes(location.hostname)) {
   const ping = () => fetch("__alive", { cache: "no-store" }).catch(() => {});
   ping();
   setInterval(ping, 15000);
+  // The shortcut starts the tuning backend with an idle exit; keep it alive while the booth is open.
+  setInterval(() => fetch(beUrl("/health"), { cache: "no-store" }).catch(() => {}), 60000);
 }
 
 ui.profile = (await store.get("profile")) || null;

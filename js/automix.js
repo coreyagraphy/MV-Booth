@@ -15,6 +15,7 @@ import {
   hann,
   integratedLoudness,
   limit,
+  loudnessOf,
   linToDb,
   lookaheadMax,
   loudnessEnvelope,
@@ -438,7 +439,7 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile, s
 
   const L = rendered.getChannelData(0);
   const R = rendered.getChannelData(1);
-  const lufs = integratedLoudness([L, R], fs);
+  const lufs = loudnessOf([L, R], fs);
   const ratio = preset.comp.ratio;
   return {
     buffer: rendered,
@@ -570,7 +571,8 @@ export async function renderMix({ vocals, beats = [], fs, mode, settings, length
   for (const { track, processed } of vocals) {
     const role = ROLES[track.role] || ROLES.lead;
     const targetLufs = preset.vocalLufs + role.levelDb + (track.trimDb || 0);
-    const gainDb = clamp(targetLufs - processed.lufs, -30, 30);
+    // Silence (−∞) means nothing to level: leave it at unity rather than +30 dB.
+    const gainDb = Number.isFinite(processed.lufs) ? clamp(targetLufs - processed.lufs, -30, 30) : 0;
     if (track.role === "lead") leadLufs.push(targetLufs);
     if (track.role === "lead" || track.role === "hook") {
       const env = activityEnvelope(processed.buffer);
@@ -660,9 +662,9 @@ export async function renderMix({ vocals, beats = [], fs, mode, settings, length
         sumR[i + o] += R[i] * g;
       }
     }
-    const beatLufs = integratedLoudness([sumL, sumR], fs);
+    const beatLufs = loudnessOf([sumL, sumR], fs);
     const ref = leadLufs.length ? Math.max(...leadLufs) : preset.vocalLufs;
-    const busDb = clamp(ref + preset.beatOffsetLu - balance - beatLufs, -60, 20);
+    const busDb = Number.isFinite(beatLufs) ? clamp(ref + preset.beatOffsetLu - balance - beatLufs, -60, 20) : 0;
     const dur = length / fs;
     const lines = [];
     for (const b of live) {
@@ -673,14 +675,18 @@ export async function renderMix({ vocals, beats = [], fs, mode, settings, length
       src.buffer = b.buffer;
       const g = ctx.createGain();
       g.gain.value = dbToLin(clamp(busDb + (b.volumeDb || 0), -60, 20));
-      let head = src;
-      if (role.mono && b.buffer.numberOfChannels > 1) {
+      // Channel shaping: fold the 808 to mono, then always feed the panner true stereo. A mono
+      // input into a StereoPanner is spread at −3 dB per side, which would skew the balance measured above.
+      const shape = (n) => {
         const m = ctx.createGain();
-        m.channelCount = 1;
+        m.channelCount = n;
         m.channelCountMode = "explicit";
         m.channelInterpretation = "speakers";
-        head = head.connect(m);
-      }
+        return m;
+      };
+      let head = src;
+      if (role.mono && b.buffer.numberOfChannels > 1) head = head.connect(shape(1));
+      head = head.connect(shape(2));
       if (b.kind === "bass") {
         const hp = ctx.createBiquadFilter();
         hp.type = "highpass";

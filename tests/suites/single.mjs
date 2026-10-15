@@ -1,0 +1,16 @@
+import { chromium } from "playwright-core";
+import { readFileSync } from "node:fs";
+const b = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined });
+const ctx = await b.newContext({ acceptDownloads: true, viewport: { width: 1500, height: 900 } });
+const p = await ctx.newPage();
+const errs = []; p.on("pageerror", (e) => errs.push(e.message)); p.on("console", (m) => m.type() === "error" && !/Failed to load resource|404/.test(m.text()) && errs.push(m.text()));
+await p.goto(process.env.SINGLE_URL); await p.waitForTimeout(1500);
+await p.setInputFiles("#fileBeat", "beat.wav"); await p.setInputFiles("#fileVocal", "vocal.wav");
+await p.waitForFunction(() => window.__booth.session.tracks.length === 1);
+await p.click("#btnAutomix"); await p.waitForFunction(() => window.__booth.ui.master && !document.body.classList.contains("busy"), null, { timeout: 120000 });
+const [d] = await Promise.all([p.waitForEvent("download", { timeout: 60000 }), p.evaluate(() => window.__booth.exportAs("mp3"))]);
+await d.saveAs("single.mp3"); const m = readFileSync("single.mp3");
+const ok = (n, c, x = "") => console.log(`${c ? "PASS" : "FAIL"} ${n} ${x}`);
+ok("single-file build mixes and exports MP3", /MP3 exported/.test(await p.textContent("#status")) && m.length > 100000 && m[0] === 0xff, `${m.length} bytes`);
+ok("no page errors", errs.length === 0, errs.join("\n"));
+await b.close();

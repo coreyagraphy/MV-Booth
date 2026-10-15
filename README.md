@@ -104,6 +104,10 @@ The **Engine** tab logs every decision with its numbers, plus what the engine ha
 
 No neural network is downloaded, and nothing leaves your PC. The engine uses the same proven signal-processing methods behind classic pitch-correction and alignment tools (YIN, PSOLA, DTW, WSOLA, BS.1770 loudness). It learns from you: after every mix it saves a profile of your voice (tone, pitch range, sibilance, key) and your preferred settings, and short or noisy takes lean on that profile. See `REA.md` for the reverse-engineering ledger.
 
+## Tests
+
+`cd tests && npm install && npm test` runs lint and every browser suite against a private port (your sessions are never touched). See `tests/README.md`.
+
 ## Latency, storage, Netlify
 
 - **Latency:** takes are shifted by the reported device latency. If your vocal still lands late or early, nudge **Latency trim** (positive pulls takes earlier).

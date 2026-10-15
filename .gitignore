@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 backend.log
 *.zip
+tests/node_modules/
+tests/.out/

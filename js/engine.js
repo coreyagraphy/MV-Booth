@@ -83,7 +83,9 @@ export async function runEngine({ tracks, beats = [], fs, mode, settings, profil
     stage("double", i / wantDbl.length, `Generating doubles · ${t.name}`);
     const pr = prep.get(t.id);
     for (const d of await makeDoubles(pr.x, fs, pr.f0Out, t.dbl)) {
-      const v = { id: `${t.id}:${d.key}`, name: `${d.name} (${t.name})`, role: d.role || "double", pan: d.pan, offset: t.offset || 0, fx: "clean", virtual: true, parent: t.id };
+      const v = { id: `${t.id}:${d.key}`, name: `${d.name} (${t.name})`, role: d.role || "double", pan: d.pan, offset: t.offset || 0, fx: "clean", virtual: true, parent: t.id,
+        // Doubles follow their lead: same cleanup (hum notch, no re-denoise of a cleaned take), fader and sends.
+        clean: t.clean, trimDb: t.trimDb, revSend: t.revSend, dlySend: t.dlySend };
       prep.set(v.id, { x: d.x, pitch: pr.pitch, f0Out: pr.f0Out, notes: [`Generated from ${t.name}: ${d.key === "oct" ? "octave below" : `${d.pan < 0 ? "+9" : "−11"} cents, drifting 19–27 ms delay`}`] });
       virtual.push(v);
     }

@@ -1,0 +1,17 @@
+{
+  "name": "mv-booth-tests",
+  "private": true,
+  "description": "Test-only tooling for MV Booth (the app itself has no npm dependencies).",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs",
+    "test:all": "node run.mjs --backend",
+    "lint": "eslint --no-config-lookup -c eslint.config.mjs ../js/*.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "globals": "17.13.0",
+    "playwright-core": "1.56.1"
+  }
+}

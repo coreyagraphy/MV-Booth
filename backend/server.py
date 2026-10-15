@@ -7,8 +7,11 @@ POST /tune  (multipart: file=<WAV>, params=<JSON>)  → {"job": id}
 GET  /jobs/{id}              → {"state": queued|running|done|failed, "progress", "message", "report"}
 GET  /jobs/{id}/audio        → tuned WAV (when done)
 
-Personal tool: binds to localhost only, no auth. Jobs live in memory and
-are dropped after an hour; the session model stays in the browser.
+Personal tool: binds to localhost only, no auth. Jobs live in memory: a result
+is freed once its audio is downloaded, finished jobs are dropped after 10 minutes,
+queued/running jobs are never dropped. With --idle-exit (how the MV Booth shortcut
+starts it) the process exits after 5 minutes without any request, so it doesn't
+keep ~1 GB of torch in memory after the booth closes.
 """
 from __future__ import annotations
 
@@ -30,8 +33,12 @@ from fastapi.responses import JSONResponse, Response
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PORT = 8765
+MAX_UPLOAD = 300 * 1024 * 1024  # ~25 min of 48 kHz float stereo; far beyond any single take
+FINISHED_TTL = 600
+IDLE_EXIT = 300 if "--idle-exit" in sys.argv else 0
+LAST_SEEN = time.time()
 
 app = FastAPI(title="MV Booth backend", version=VERSION)
 app.add_middleware(
@@ -44,6 +51,8 @@ app.add_middleware(
 
 @app.middleware("http")
 async def private_network(request: Request, call_next):
+    global LAST_SEEN
+    LAST_SEEN = time.time()
     # Chrome's Private Network Access: lets the https Netlify page reach localhost.
     if request.method == "OPTIONS" and request.headers.get("access-control-request-private-network"):
         resp = Response(status_code=204)
@@ -79,10 +88,24 @@ _load_engines()
 
 
 def _gc():
-    cutoff = time.time() - 3600
+    cutoff = time.time() - FINISHED_TTL
     with LOCK:
-        for k in [k for k, j in JOBS.items() if j["created"] < cutoff]:
+        for k in [k for k, j in JOBS.items() if j["state"] in ("done", "failed") and j.get("finished", j["created"]) < cutoff]:
             JOBS.pop(k, None)
+
+
+def _housekeeping():
+    # Runs even when nobody calls the API, so an idle backend still frees memory (and can exit).
+    while True:
+        time.sleep(30)
+        _gc()
+        busy = any(j["state"] in ("queued", "running") for j in list(JOBS.values()))
+        if IDLE_EXIT and not busy and time.time() - LAST_SEEN > IDLE_EXIT:
+            print("No requests for a while and no jobs: exiting (the MV Booth shortcut restarts me).", flush=True)
+            os._exit(0)
+
+
+threading.Thread(target=_housekeeping, daemon=True).start()
 
 
 @app.get("/health")
@@ -114,16 +137,22 @@ def _run_tune(job_id: str, audio: np.ndarray, sr: int, params: dict):
         traceback.print_exc()
         job["state"] = "failed"
         job["message"] = f"{type(e).__name__}: {e}"
+    finally:
+        job["finished"] = time.time()
 
 
 @app.post("/tune")
 async def post_tune(file: UploadFile = File(...), params: str = Form("{}")):
     if "error" in ENGINES:
         raise HTTPException(503, f"Tuning engines not loaded: {ENGINES['error']}")
+    raw = await file.read(MAX_UPLOAD + 1)
+    if len(raw) > MAX_UPLOAD:
+        raise HTTPException(413, "Audio too large: send one take at a time")
     try:
-        data, sr = sf.read(io.BytesIO(await file.read()), dtype="float64", always_2d=True)
+        data, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
     except Exception as e:
         raise HTTPException(400, f"Could not read audio: {e}") from e
+    del raw
     if len(data) < sr * 0.2:
         raise HTTPException(400, "Audio too short")
     try:
@@ -134,7 +163,9 @@ async def post_tune(file: UploadFile = File(...), params: str = Form("{}")):
     job_id = uuid.uuid4().hex[:12]
     with LOCK:
         JOBS[job_id] = {"state": "queued", "progress": 0.0, "message": "Queued", "created": time.time(), "result": None, "report": None}
-    POOL.submit(_run_tune, job_id, data.mean(axis=1), sr, p)
+    mono = data.mean(axis=1).astype(np.float64)
+    del data
+    POOL.submit(_run_tune, job_id, mono, sr, p)
     return {"job": job_id}
 
 
@@ -153,7 +184,10 @@ def get_audio(job_id: str):
         raise HTTPException(404, "Unknown job")
     if job["state"] != "done":
         raise HTTPException(409, f"Job is {job['state']}")
-    return Response(job["result"], media_type="audio/wav")
+    if job["result"] is None:
+        raise HTTPException(410, "Audio already downloaded")
+    body, job["result"] = job["result"], None  # the browser keeps it as a take; free it here
+    return Response(body, media_type="audio/wav")
 
 
 if __name__ == "__main__":

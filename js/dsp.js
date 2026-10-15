@@ -198,6 +198,23 @@ export function integratedLoudness(channels, fs) {
 }
 
 /** Short-term K-weighted loudness envelope, one value per `hop` samples. */
+/**
+ * Integrated loudness that still answers for clips under 0.4 s (a one-word ad-lib): falls back to
+ * ungated K-weighted loudness. −Infinity only for true silence; callers treat that as "no change".
+ */
+export function loudnessOf(channels, fs) {
+  const lufs = integratedLoudness(channels, fs);
+  if (Number.isFinite(lufs)) return lufs;
+  let sum = 0;
+  for (const c of channels) {
+    const w = kWeight(c, fs);
+    let ms = 0;
+    for (let i = 0; i < w.length; i++) ms += w[i] * w[i];
+    sum += ms / Math.max(1, w.length);
+  }
+  const lk = -0.691 + 10 * Math.log10(Math.max(sum, 1e-12));
+  return lk > -70 ? lk : -Infinity;
+}
 export function loudnessEnvelope(x, fs, hop, windowSec = 0.3) {
   const w = kWeight(x, fs);
   const frames = Math.ceil(x.length / hop);
@@ -615,7 +632,9 @@ export function declick(x, fs) {
   const pad = Math.max(2, Math.round(0.0002 * fs));
   const isoLo = Math.round(0.0015 * fs), isoHi = Math.round(0.012 * fs);
   let clicks = 0;
-  for (let i = W; i < n - W; i++) {
+  // Start/stop far enough in that the reference window and the ±12 ms periodicity check stay inside the take.
+  const edge = Math.max(W, isoHi + 1);
+  for (let i = edge; i < n - edge; i++) {
     const a = Math.abs(r[i]);
     if (a < 2e-3) continue; // below −54 dBFS nobody hears it
     const e = cs[i + W] - cs[i - W] - (cs[i + ex] - cs[i - ex]);
@@ -626,7 +645,7 @@ export function declick(x, fs) {
     for (let k = isoLo; k <= isoHi && !periodic; k++) periodic = Math.abs(r[i - k]) > a * 0.45 || Math.abs(r[i + k]) > a * 0.45;
     if (periodic) continue;
     let j = i;
-    while (j < n - W && j - i <= maxLen && Math.abs(r[j + 1]) > rms * 4) j++;
+    while (j < n - edge && j - i <= maxLen && Math.abs(r[j + 1]) > rms * 4) j++;
     if (j - i > maxLen) {
       i = j; // a real transient (consonant onset), not a click
       continue;
