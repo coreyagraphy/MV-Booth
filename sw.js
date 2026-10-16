@@ -1,8 +1,8 @@
 // Offline shell: the booth keeps working even when the local server is off.
-const CACHE = "mvbooth-v13";
+const CACHE = "mvbooth-v14";
 const SHELL = [
   "./", "index.html", "styles.css", "manifest.webmanifest",
-  "js/app.js", "js/automix.js", "js/doubles.js", "js/dsp.js", "js/engine.js", "js/metro.js", "js/mp3.js", "js/session.js", "js/store.js", "js/tune.js", "js/wav.js",
+  "js/app.js", "js/automix.js", "js/doubles.js", "js/dsp.js", "js/engine.js", "js/metro.js", "js/mp3.js", "js/package.js", "js/session.js", "js/store.js", "js/tune.js", "js/wav.js",
   "js/vendor/lame.min.js",
   "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png",
 ];

@@ -2,6 +2,7 @@ import { CLEAN_DEFAULTS, FX, MODES, ROLES, DELAYS, REVERBS, estimateBpm, makeImp
 import { STAGES, renderStem, runEngine } from "./engine.js";
 import { Metronome, TapTempo, barBeat, barSeconds, measureSync, snapTime } from "./metro.js";
 import { encodeMp3 } from "./mp3.js";
+import { packSession, unpackSession, usedAudioIds } from "./package.js";
 import * as S from "./session.js";
 import * as store from "./store.js";
 import { NOTE_NAMES, SCALES, keyLabel } from "./tune.js";
@@ -1418,9 +1419,49 @@ function renderStudioReport(take) {
 
 // ---------------------------------------------------------------- export
 const stamp = () => new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+// ---------------------------------------------------------------- session package (.mvbooth)
+/** The whole session in one file: model + the audio its clips and beats use. No Automix needed. */
+async function exportPackage() {
+  await flushSave();
+  const audioMap = new Map();
+  for (const id of usedAudioIds(session)) {
+    const b = audio.get(id) || (await loadAudio(id));
+    if (b) audioMap.set(id, { sampleRate: b.sampleRate, channels: Array.from({ length: b.numberOfChannels }, (_, c) => b.getChannelData(c)) });
+  }
+  if (!audioMap.size) throw new Error("this session has no audio yet");
+  status("Packing the session…");
+  const blob = await packSession(session, audioMap);
+  return blob;
+}
+async function importPackage(file) {
+  if (guardBusy("opening a package")) return;
+  status(`Opening ${file.name || "package"}…`);
+  const { session: s, audio: pa } = await unpackSession(file);
+  for (const [id, a] of pa) {
+    const b = new AudioBuffer({ numberOfChannels: a.channels.length, length: a.channels[0].length, sampleRate: a.sampleRate });
+    a.channels.forEach((d, c) => b.copyToChannel(d, c));
+    const r = await resample(b);
+    audio.set(id, r);
+    await saveAudio(id, r);
+  }
+  // Opens as its own session (a new id), so it never overwrites the one it came from.
+  s.id = S.uid();
+  s.created = Date.now();
+  await S.saveSession(s);
+  await S.saveSession(session);
+  await switchTo(await S.loadSession(s.id));
+  status(`Opened "${s.name}" from the package · ${s.tracks.length} track(s), ${s.beats.length} beat stem(s).`);
+}
+
 async function exportAs(kind) {
   $("exportMenu").hidden = true;
   const rate = +S_().exportRate || 48000;
+  if (kind === "package") {
+    const blob = await exportPackage();
+    download(blob, `${safe(session.name)}_${stamp()}.mvbooth`);
+    status(`Session package saved (${(blob.size / 1048576).toFixed(1)} MB): beat, every take on the timeline, edits and settings. Open it in MV Booth with Session ▾ → Open session package, or send it for mixing.`);
+    return;
+  }
   if (kind === "raw") {
     const all = session.tracks.flatMap((t) => t.takes.map((k) => [t, k]));
     if (!all.length) return toast("No takes yet.");
@@ -2507,6 +2548,7 @@ async function renderSessionMenu() {
     $("sessionName").textContent = session.name;
     m.hidden = true;
   });
+  act("Open session package…", () => $("filePackage").click());
   act("Duplicate", async () => {
     await S.saveSession(session);
     await switchTo(S.duplicateSession(session));
@@ -2898,6 +2940,11 @@ function bindControls() {
   // Imports
   $("btnImportBeat").onclick = () => $("fileBeat").click();
   $("btnImportVocal").onclick = () => $("fileVocal").click();
+  $("filePackage").onchange = (e) => {
+    const [f] = e.target.files;
+    e.target.value = "";
+    if (f) importPackage(f).catch((err) => toast(`Couldn't open that package: ${err.message}`));
+  };
   $("fileBeat").onchange = (e) => {
     const files = [...e.target.files];
     e.target.value = "";
@@ -3001,6 +3048,8 @@ function bindControls() {
   tl.ondrop = async (e) => {
     e.preventDefault();
     tl.classList.remove("drag");
+    const pkg = [...e.dataTransfer.files].find((f) => /\.mvbooth$/i.test(f.name));
+    if (pkg) return importPackage(pkg).catch((err) => toast(`Couldn't open that package: ${err.message}`));
     const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("audio") || /\.(wav|mp3|m4a|aac|flac|ogg|aif+)$/i.test(f.name));
     // Onto a beat lane, named like stems, several files on an empty session, or the first file
     // with no beat yet → beat stems. Anything else → vocals.
@@ -3193,4 +3242,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, mic, automix, checkForUpdate, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { get session() { return session; }, ui, audio, mic, automix, checkForUpdate, exportPackage, importPackage, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };

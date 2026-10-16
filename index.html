@@ -194,6 +194,7 @@
             </div>
             <input type="file" id="fileBeat" accept="audio/*" multiple hidden />
             <input type="file" id="fileVocal" accept="audio/*" multiple hidden />
+            <input type="file" id="filePackage" accept=".mvbooth" hidden />
             <h3>Recording</h3>
             <label class="check"><input type="checkbox" id="usePrompter" checked /> Lyric prompter while recording</label>
             <label class="check"><input type="checkbox" id="transcribe" /> <span>Live transcription <small>Chrome/Edge only; sends audio to the browser's speech service</small></span></label>
@@ -296,6 +297,7 @@
           <button data-exp="mp3">Master · MP3 320 kbps</button>
           <button data-exp="stems">Stems · WAV (one per track)</button>
           <button data-exp="raw">Raw takes · WAV</button>
+          <button data-exp="package" title="One file with the whole session (beat, takes on the timeline, edits, settings): open it in MV Booth anywhere, or send it to be mixed">Session package · .mvbooth</button>
           <label class="tb-field">Sample rate <select id="exportRate"><option value="48000">48 kHz</option><option value="44100">44.1 kHz</option></select></label>
         </div>
       </div>

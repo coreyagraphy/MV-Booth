@@ -108,6 +108,12 @@ The **Engine** tab logs every decision with its numbers, plus what the engine ha
 
 No neural network is downloaded, and nothing leaves your PC. The engine uses the same proven signal-processing methods behind classic pitch-correction and alignment tools (YIN, PSOLA, DTW, WSOLA, BS.1770 loudness). It learns from you: after every mix it saves a profile of your voice (tone, pitch range, sibilance, key) and your preferred settings, and short or noisy takes lean on that profile. See `REA.md` for the reverse-engineering ledger.
 
+## Session package (.mvbooth): move or send a whole song
+
+**Export ▾ → Session package** saves the entire session in one file: beat stems, every take on the timeline, clip edits, timing nudges, cleanup and mix settings (audio at 24-bit; takes no clip uses are left out). A 3-minute song with a lead, a double and a beat is about 60 MB. Open it anywhere with **Session ▾ → Open session package…** or by dropping the file on the timeline; it opens as its own session and never overwrites the original. Use it to move a song between computers, keep a backup, or send it to be mixed.
+
+`tests/tools/mix-package.mjs <song.mvbooth> <out-dir> [--preset "Rap · Upfront"] [--fix-timing]` mixes a package all the way through in the real app, headless: it measures each vocal's timing against the beat's hits, optionally corrects clear offsets, runs Automix, and writes the master WAV + MP3, stems, a package of the mix and `REPORT.md`.
+
 ## Tests
 
 `cd tests && npm install && npm test` runs lint and every browser suite against a private port (your sessions are never touched). See `tests/README.md`.

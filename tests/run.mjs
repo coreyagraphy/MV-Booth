@@ -11,7 +11,7 @@ const root = join(here, "..");
 const out = join(here, ".out");
 const args = process.argv.slice(2);
 const withBackend = args.includes("--backend");
-const SUITES = ["dsp", "declick", "daw", "punch", "ux", "song", "stems", "fixes", "booth", "single", ...(withBackend ? ["studio"] : [])];
+const SUITES = ["dsp", "declick", "daw", "punch", "ux", "song", "stems", "fixes", "booth", "package", "single", ...(withBackend ? ["studio"] : [])];
 const pick = args.filter((a) => !a.startsWith("--"));
 const run = pick.length ? SUITES.filter((s) => pick.includes(s)) : SUITES;
 const APP_PORT = 5199, SINGLE_PORT = 5198;

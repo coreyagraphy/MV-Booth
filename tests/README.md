@@ -23,9 +23,14 @@ node run.mjs stems song           # just some suites
 | stems | multi-stem import, roles, mute/solo, per-stem mix + export, persistence |
 | fixes | audit fixes: short ad-lib loudness, clip before 0:00, undo blocked while recording, save on close, duplicate-safe purge |
 | booth | Enter/Space never re-press buttons (marker bug), 🎧 Monitor, sync test maths (180 / 320 ms, uneven, too few), track timing nudge, scroll bar, ⇤ Start |
+| package | `.mvbooth` round trip: 24-bit precision with peaks above full scale kept, model intact, unused takes dropped, bad files refused, export → open in a fresh browser |
 | single | the self-contained `dist/index.html` alone (Netlify single-file upload) |
 | studio | Studio tune through the local backend (needs `backend\start-backend.bat`) |
 
 `node bench.mjs` times Automix on a 3-minute song (tiles the fixtures) and the timeline redraw; `PROFILE=1` adds a per-function profile.
 
 Fixtures (synthetic vocal, beat, double, drum/808/keys stems) are generated into `tests/.out/`.
+
+## Tools
+
+`node tools/mix-package.mjs <song.mvbooth> <out-dir> [--preset "Rap · Upfront"] [--fix-timing]` mixes a session package all the way through in the real app (headless, own port): timing analysis vs the beat, Automix, master WAV + MP3, stems, a package of the mix and `REPORT.md`.

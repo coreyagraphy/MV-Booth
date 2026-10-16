@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
-const ORDER = ["dsp", "store", "wav", "session", "metro", "mp3", "tune", "automix", "doubles", "engine", "app"];
+const ORDER = ["dsp", "store", "wav", "session", "metro", "mp3", "package", "tune", "automix", "doubles", "engine", "app"];
 
 function bundle() {
   // MP3 encoder (LGPL lamejs) travels as a string; mp3.js spins it up in a Worker.

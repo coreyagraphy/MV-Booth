@@ -92,6 +92,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Master WAV 48 kHz / 24-bit | ✓ | **Built**: 48 or 44.1 kHz |
 | MP3 320 kbps in a Worker | ✓ | **Built**: lamejs (LGPL, vendored with licence) |
 | Stems (one per track) and raw takes | ✓ | **Built**: one per vocal track and one per beat stem |
+| Session interchange (move / back up / send a whole song) | ✗ | **Built (2.6)**: `.mvbooth` session package (model + used audio, 24-bit with per-audio scale so float peaks above full scale survive, gzip); opens as a new session; headless `tests/tools/mix-package.mjs` mixes a package end to end with a beat-timing analysis (vocal onsets vs beat hits, within half a 16th; verified: a planted 40 ms offset measured as 40 ms, re-measured on the beat after the fix) |
 | Lyric import (.txt), `[bar N]` sync, manual advance | ✓ | **Built**: highlighted line follows the playhead; ↓/↑ advance by hand |
 
 ## 2. Decisions on the spec's open questions (updated for 2.2)
