@@ -17,6 +17,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Nudge playhead (beat / bar) | ✓ | **Built**: ← → (Shift = bar) |
 | Markers | ✗ | **Built**: M adds; click on the ruler jumps; double-click renames or deletes; Song tab drops named Intro/Verse/Hook/Bridge/Outro markers |
 | Guided start-to-finish song workflow | ✗ | **Built (2.4)**: Song tab checklist (10 steps, auto-ticks, highlights the next step) |
+| One-click finish | ✗ | **Built (2.7)**: Make my song = Automix (current preset) → master WAV + MP3; refuses politely with nothing recorded; header stays one row down to 1440 px |
 | Punch in/out with pre-roll / post-roll | ✗ | **Built (2.2)**: Shift-drag or selection sets the range (red), P arms, 1–2 bar pre-roll, sample-exact latency-compensated capture, 1 bar post-roll, auto-stop, new take + 10 ms crossfades |
 | Tempo map / time-signature changes | ✗ | Not built (fixed 4/4, one tempo) |
 

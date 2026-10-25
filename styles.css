@@ -455,3 +455,27 @@ body.recording .stage { box-shadow: 0 0 0 2px rgba(255, 59, 74, 0.7), 0 0 40px r
 .update-bar i { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 10px var(--teal); }
 .update-bar b { font: 600 12px "Space Grotesk"; }
 .update-bar span { font-size: 11px; color: var(--dim); }
+
+/* Make my song: the teal sibling of Automix (one click → mix + WAV + MP3). */
+.core.make { color: #031a18; background: linear-gradient(135deg, #b8fff9, var(--teal) 50%, #0a9f93); box-shadow: 0 0 0 1px rgba(150, 255, 248, 0.5), 0 10px 40px -10px rgba(18, 224, 208, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.5); }
+.core.make.working { animation: pulse 1.2s ease-in-out infinite; pointer-events: none; }
+@keyframes pulse { 50% { filter: brightness(1.25); } }
+.make-row { display: flex; align-items: center; gap: 12px; margin: 4px 0 10px; }
+.make-row .core { padding: 10px 18px; font-size: 11px; letter-spacing: 0.16em; flex: none; }
+header .core.make { white-space: nowrap; }
+header .core.make .short { display: none; }
+@media (max-width: 1800px) {
+  header .core { padding: 12px 16px; letter-spacing: 0.14em; }
+  header .core.make .full { display: none; }
+  header .core.make .short { display: inline; }
+  .bar { gap: 8px; padding: 10px 12px; }
+  .transport { gap: 6px; }
+  .icon { width: 36px; height: 36px; }
+  .clock { font-size: 22px; min-width: 104px; }
+  .chips .chip { padding: 5px 5px; letter-spacing: 0.02em; }
+  .seg button { padding: 7px 8px; }
+  #btnGuide { padding-left: 8px; padding-right: 8px; }
+}
+@media (max-width: 1500px) {
+  .brand { display: none; }
+}

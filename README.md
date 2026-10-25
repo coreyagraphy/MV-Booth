@@ -30,6 +30,9 @@ In the **Tune** tab, *Studio tune* shows a green dot when the backend is online.
 
 ## Make a whole song (Song tab)
 
+**Fastest path:** record, then press **Make my song** (teal button in the top bar, or on the Song tab). It runs Automix with the current preset (clean, tune, doubles, mix, master) and saves the master as WAV + MP3 to your Downloads. Press **B** to compare with the raw take; pick another feel in Mixer → Quick presets and press it again.
+
+
 The **Song** tab is a start-to-finish checklist that ticks itself off as you go and highlights the next step: **Beat → Song sections → Record → Comp → Clean → Tune → Doubles & ad-libs → Mix → Master → Export**. Each step has buttons that do it (import the beat, drop Intro/Verse/Hook markers, add and arm a lead, open Clean, Automix, export WAV/MP3).
 
 ## Vocal cleanup (Clean tab)

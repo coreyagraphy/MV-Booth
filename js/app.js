@@ -1177,6 +1177,31 @@ async function automix() {
   }
 }
 
+// ---------------------------------------------------------------- Make my song
+/** One click from a recorded song to files: Automix with the current preset, then master WAV + MP3. */
+async function makeMySong() {
+  if (guardBusy("making the song")) return;
+  const { tracks } = engineInputs();
+  if (!tracks.length) return toast("Record or import a vocal first, then press Make my song.");
+  const btn = $("btnMakeSong");
+  btn.disabled = true;
+  btn.classList.add("working");
+  try {
+    await automix();
+    if (!ui.master || ui.stale) throw new Error(ui.cancel?.cancelled ? "cancelled" : "the mix didn't finish");
+    await exportAs("wav");
+    await exportAs("mp3");
+    showTab("song");
+    status(`Your song is done: WAV + MP3 are in your Downloads (${ui.run.mix.lufs.toFixed(1)} LUFS, true peak ${(ui.run.mix.truePeak ?? ui.run.mix.peak).toFixed(1)} dBTP). Press Space to hear the mix, B to compare with the raw take, and change a preset in the Mixer tab then press Make my song again if you want it different.`);
+    toast("Song made: WAV + MP3 saved");
+  } catch (err) {
+    if (err.message !== "cancelled") toast(`Make my song stopped: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("working");
+  }
+}
+
 // ---------------------------------------------------------------- vocal cleanup (Clean tab)
 const NO_CLEAN = { denoise: 0, breaths: "keep", deess: 0, pop: false, declick: false, hum: "off" };
 const cleanOf = (t) => (t.clean = { ...CLEAN_DEFAULTS, ...(t.clean || {}) });
@@ -1278,7 +1303,7 @@ function songSteps() {
       done: session.tracks.some((t) => t.type !== "lead" && t.takes.length) || session.tracks.some((t) => t.dbl && t.dbl !== "off"),
       acts: [["Add double", () => addTrackOfType("double")], ["Add ad-lib", () => addTrackOfType("adlib")]] },
     { t: "Mix", d: "Pick a mix preset, then Automix. Press B to compare raw vs mix; nudge faders and Automix again.", done: !!ui.master && !ui.stale,
-      acts: [["Presets", () => showTab("mixer")], ["Automix", () => automix()]] },
+      acts: [["Presets", () => showTab("mixer")], ["Automix", () => automix()], ["Make my song", () => makeMySong()]] },
     { t: "Master", d: "Loudness target, tone, width and ceiling for the final file (Mixer tab → Master). Automix applies them.", done: !!ui.master && !ui.stale && S_().stages.master,
       acts: [["Open master", () => showTab("mixer")]] },
     { t: "Export", d: "WAV for distribution, MP3 to share, stems for anyone mixing it further.", done: !!ui.exported,
@@ -2826,6 +2851,8 @@ function bindControls() {
   $("btnSplit").onclick = splitAtPlayhead;
   $("btnDelClip").onclick = deleteClip;
   $("btnMarker").onclick = () => addMarker();
+  $("btnMakeSong").onclick = makeMySong;
+  $("btnMakeSongTab").onclick = makeMySong;
   $("btnZoomIn").onclick = () => zoom(1.5);
   $("btnZoomOut").onclick = () => zoom(1 / 1.5);
   $("btnToStart").onclick = returnToZero;
@@ -3242,4 +3269,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, mic, automix, checkForUpdate, exportPackage, importPackage, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { get session() { return session; }, ui, audio, mic, automix, makeMySong, checkForUpdate, exportPackage, importPackage, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
