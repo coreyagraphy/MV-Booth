@@ -540,6 +540,9 @@ function teardownLive() {
 
 // ---------------------------------------------------------------- transport
 const isLoop = () => session.loop.on && session.loop.end - session.loop.start > 0.25;
+// The loop only takes over when you start inside it: play from anywhere else and the song runs
+// straight through instead of jumping back to the loop.
+const inLoop = (t) => isLoop() && t >= session.loop.start - 0.05 && t < session.loop.end;
 
 /** Schedule timeline segment [a, b) to sound at audio time T. */
 function scheduleSegment(a, b, T, sources, { cue }) {
@@ -615,7 +618,7 @@ async function startPlayback(from = ui.playhead, { cue = false, countIn = 0 } = 
   const sources = [];
   const pre = countIn ? countIn * barSeconds(bpm()) : 0;
   const t0 = ctx.currentTime + 0.08 + pre;
-  const loop = isLoop() && !ui.recording?.punch ? { ...session.loop, L: session.loop.end - session.loop.start } : null;
+  const loop = inLoop(from) && !ui.recording?.punch ? { ...session.loop, L: session.loop.end - session.loop.start } : null;
   if (loop) from = loop.start;
   rawBus.gain.value = 1;
   mixBus.gain.value = 1;
@@ -857,7 +860,7 @@ async function toggleRecord() {
   mic.chunks = [];
   resetRecView();
   if (isPunch()) return startPunch(track);
-  const loop = isLoop();
+  const loop = inLoop(ui.playhead);
   const from = loop ? session.loop.start : ui.playhead;
   ui.recording = { trackId: track.id, from, loop: loop ? { ...session.loop, L: session.loop.end - session.loop.start } : null };
   const t0 = await startPlayback(from, { cue: true, countIn: bpm() ? +S_().countIn || 0 : 0 });
@@ -2643,6 +2646,7 @@ function renderAll() {
   $("btnClick").classList.toggle("on", !!S_().click);
   $("btnPunch").classList.toggle("on", !!session.punch?.on);
   $("btnSnap").classList.toggle("on", !!S_().snap);
+  $("btnClearMarkers").hidden = !session.markers.length;
   renderLanes();
   // Side panels only rebuild while on screen; a hidden one is rebuilt when its tab opens.
   for (const [name, fn] of Object.entries(PANELS)) {
@@ -2773,7 +2777,10 @@ function bindControls() {
   $("btnMonitor").onclick = () => toggleMonitor(!$("btnMonitor").classList.contains("on"));
   $("btnCalibrate").onclick = calibrate;
   $("btnSync").onclick = syncTest;
-  $("btnLoop").onclick = () => edit(session.loop.on ? "Loop off" : "Loop on", () => (session.loop.on = !session.loop.on), { audioChange: false });
+  $("btnLoop").onclick = () => {
+    edit(session.loop.on ? "Loop off" : "Loop on", () => (session.loop.on = !session.loop.on), { audioChange: false });
+    if (isLoop() && !inLoop(currentPos())) seek(session.loop.start);
+  };
   $("btnClick").onclick = () => edit("Click", () => (s().click = !s().click), { audioChange: false });
   $("btnPunch").onclick = () => {
     if (!(session.punch.out > session.punch.in)) return toast("Set a punch range first: Shift-drag on the ruler, or drag a selection and click \"Punch ← selection\".");
@@ -2851,6 +2858,12 @@ function bindControls() {
   $("btnSplit").onclick = splitAtPlayhead;
   $("btnDelClip").onclick = deleteClip;
   $("btnMarker").onclick = () => addMarker();
+  $("btnClearMarkers").onclick = () => {
+    const n = session.markers.length;
+    if (!n) return;
+    edit("Clear markers", () => (session.markers = []), { audioChange: false });
+    toast(`Removed ${n} marker${n > 1 ? "s" : ""} (Ctrl+Z brings them back)`);
+  };
   $("btnMakeSong").onclick = makeMySong;
   $("btnMakeSongTab").onclick = makeMySong;
   $("btnZoomIn").onclick = () => zoom(1.5);
@@ -3014,7 +3027,8 @@ function bindControls() {
     ruler.setPointerCapture(e.pointerId);
     ruler.onpointermove = (ev) => {
       const x = ev.clientX - r.left;
-      if (!dragging && Math.abs(x - x0) < 5) return;
+      // A deliberate drag, not a slip while clicking, sets a loop (or a punch with Shift).
+      if (!dragging && Math.abs(x - x0) < 14) return;
       if (!dragging) history.push(session, "Set loop");
       dragging = true;
       const snap = (t) => (bpm() && !ev.altKey ? snapTime(t, bpm(), 1) : t);
@@ -3033,6 +3047,7 @@ function bindControls() {
       ruler.onpointermove = null;
       ruler.onpointerup = null;
       if (dragging) {
+        if (!e.shiftKey) seek(session.loop.start);
         save();
         updateUndo();
         toast(e.shiftKey ? `Punch ${fmtTime(session.punch.in)} → ${fmtTime(session.punch.out)} (P toggles)` : `Loop ${fmtTime(session.loop.start)} – ${fmtTime(session.loop.end)} (L toggles · Shift-drag sets punch)`);

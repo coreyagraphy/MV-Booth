@@ -77,7 +77,7 @@ New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language 
 | Beat stems | Got the track-outs? Select or drag all of them at once (drums, 808, keys…). Each stem gets its own lane, fader, pan, mute and solo, and a **role** (Full beat / Drums / 808 / Bass / Melody / FX) guessed from the file name: check it in the lane's drop-down. |
 | Tracks | **+ Track** → Lead / Double / Ad-lib / Hook. Click the red dot to arm (one at a time). |
 | Record | Set **Count-in**, switch **Click** on if you want it (C), press **R**. |
-| Loop record | Drag across the ruler to set a loop and press **L**, then record: every pass becomes a take. |
+| Loop record | Drag across the ruler to set a loop (the playhead jumps to its start) and press **L**, then record: every pass becomes a take. The loop only kicks in when you play or record from inside it. |
 | Comp | Open the take lanes (the `3 ▾` chip), split at the playhead (**X**), select a clip, click **Comp** on the take you want for that section. **★** marks the best take. |
 | Punch-in | Shift-drag on the ruler (or select, then **Punch ← selection**), press **P**, arm a track, press **R**. Playback starts 1–2 bars early (pre-roll), recording runs exactly from punch-in to punch-out, playback continues one bar (post-roll), and it stops itself. The punch lands as a new take with 10 ms crossfades at both edges. |
 | Edit tools | Pick a tool in the toolbar (or keys **1–4**): **✥ Move** drags clips, **⇤ Trim** drags clip ends, **✂ Cut** splits where you click, **◢ Fade** drags fade-ins/outs. The hint line under the toolbar always says what the current tool does, and explains anything you hover. |
@@ -88,6 +88,8 @@ New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language 
 | Sessions | Session name (top left): new, rename, duplicate, delete to trash (restorable for 30 days). Autosaves constantly. |
 
 ### Keyboard
+**Markers:** **M** or **+ Marker** adds one; double-click a marker on the ruler to rename or delete it; **Clear markers** (appears when there are any) removes them all, and Ctrl+Z brings them back.
+
 `Space` play / pause / pick up where you paused (works even right after clicking a button) · `Enter` stop (back to start point) · `Home` return to zero · `R` record · `L` loop · `P` punch · `C` click · `T` tap tempo · `X` split · `Delete` delete clip · `M` marker · `B` raw/mix · `E` export · `←/→` nudge a beat (Shift = bar) · `+/−` zoom · `F` fit · `Ctrl+Z` undo · `Ctrl+Shift+Z` redo · `Ctrl+S` save · `1–4` tools · `?` guide. While recording with the prompter open: `↓/↑` move the lyric line.
 
 **Lyrics:** start a line with `[bar 5]` and the prompter highlights it when the playhead reaches bar 5.

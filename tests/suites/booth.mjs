@@ -44,6 +44,30 @@ const snap0 = await B(() => window.__booth.session.settings.snap);
 await p.click("#btnSnap"); await p.keyboard.press("Enter"); await p.keyboard.press("Space"); await p.waitForTimeout(150); await p.keyboard.press("Space");
 ok("Enter/Space after clicking Snap don't toggle it again", (await B(() => window.__booth.session.settings.snap)) === !snap0);
 
+// Ruler: a slip while clicking doesn't make a loop; play from outside a loop runs straight through.
+const rul = await p.locator("#ruler").boundingBox();
+await p.mouse.move(rul.x + 200, rul.y + 15); await p.mouse.down(); await p.mouse.move(rul.x + 209, rul.y + 15, { steps: 3 }); await p.mouse.up();
+ok("a small slip on the ruler doesn't create a loop", !(await B(() => window.__booth.session.loop.on)), JSON.stringify(await B(() => window.__booth.session.loop)));
+await p.mouse.move(rul.x + 100, rul.y + 15); await p.mouse.down(); await p.mouse.move(rul.x + 260, rul.y + 15, { steps: 6 }); await p.mouse.up();
+const lp = await B(() => ({ ...window.__booth.session.loop, ph: window.__booth.ui.playhead }));
+ok("a real drag still sets a loop, with the playhead at its start", lp.on && lp.end > lp.start && Math.abs(lp.ph - lp.start) < 0.01, JSON.stringify(lp));
+await B((t) => window.__booth.seek(t), lp.end + 2);
+await p.keyboard.press("Space"); await p.waitForTimeout(600);
+const ph = await B(() => window.__booth.currentPos());
+await p.keyboard.press("Space");
+ok("playing from outside the loop doesn't jump back into it", ph > lp.end + 2, `played from ${(lp.end + 2).toFixed(2)} → at ${ph.toFixed(2)}`);
+await p.click("#btnLoop"); // loop off
+// Markers: Clear markers appears only when there are some, removes all, undo brings them back.
+// (an earlier check in this suite left one marker behind, so the button must be showing)
+ok("Clear markers shows when the session has markers", (await B(() => window.__booth.session.markers.length)) > 0 && !(await B(() => document.querySelector("#btnClearMarkers").hidden)));
+await B(() => { window.__booth.seek(2); }); await p.keyboard.press("m"); await B(() => window.__booth.seek(4)); await p.keyboard.press("m");
+const nm = await B(() => window.__booth.session.markers.length);
+await p.click("#btnClearMarkers");
+ok("Clear markers removes them all", nm >= 2 && (await B(() => window.__booth.session.markers.length)) === 0 && (await B(() => document.querySelector("#btnClearMarkers").hidden)), `${nm} → 0`);
+await p.keyboard.press("Control+z");
+ok("…and Ctrl+Z brings them back", (await B(() => window.__booth.session.markers.length)) === nm);
+await p.click("#btnClearMarkers");
+
 // Monitoring.
 await p.click("#btnMonitor"); await p.waitForTimeout(400);
 const mon = await B(() => ({ chip: document.querySelector("#btnMonitor").classList.contains("on"), box: document.querySelector("#monitor").checked, live: !!window.__booth.mic.node, gain: window.__booth.mic.monitor.gain.value }));
