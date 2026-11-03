@@ -101,8 +101,8 @@ New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language 
 - **Tune:** YIN pitch tracking, automatic key detection, note snapping with retune speed. PSOLA shifting keeps your formants, so you still sound like you. *Hard* is the robotic effect.
 - **Align:** recorded doubles and hook stacks are time-warped onto the lead (DTW + WSOLA) and pitch-matched to the lead, like VocAlign.
 - **Double:** studio-style AI doubles from the lead: a detuned, drifting L/R pair, plus an optional octave-down layer.
-- **Clean:** de-click, hum notches, noise reduction, breath keep/reduce/remove, plosive pop filter, gap gating (all set per track in the Clean tab).
-- **Tone:** low cut from your pitch, EQ matched to a target vocal curve, dynamic de-esser (harder on doubles).
+- **Clean:** de-click, hum notches, noise reduction (skipped on takes that are already clean, e.g. a close dynamic mic), breath keep/reduce/remove, plosive pop filter, gap gating (all set per track in the Clean tab).
+- **Tone:** low cut from your pitch, corrective EQ toward a target vocal curve (it only ever cuts the boxy low-mids and never dulls the top of a rap vocal), dynamic de-esser (harder on doubles).
 - **Dynamics:** vocal rider automation, compression, parallel grit in rap mode, phone FX.
 - **Space:** role-based level balance, beat stems handled by role (drums keep punch, 808 mono, melody carved and ducked) only while the vocal plays, tempo-synced delay with throws on phrase endings, plate/room with ducking, Haas widening.
 - **Master:** tone tilt, stereo width, bus glue, loudness to target (−14 streaming, −9 club, −16 VO, −23 broadcast), look-ahead limiter iterated until true peak is at or below the ceiling you pick (default −1 dBTP, 4× oversampled).

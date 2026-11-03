@@ -92,6 +92,8 @@ export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, 
     ? { out: raw, snrDb: NaN, applied: false, reductionDb: 0 }
     : await denoise(raw, fs, {
         floorDb: nrFloorDb ?? preset.nrFloorDb,
+        // Under a beat, noise 35 dB down is inaudible; a voice-over has nothing to cover it.
+        cleanSnrDb: mode === "vo" ? 42 : 35,
         onProgress: (p) => onProgress?.(p * 0.6),
       });
   const x = nr.out;
@@ -274,12 +276,15 @@ function decideEq(an, mode, role, profile) {
   const rel = (fc) => s[fc] - s[1000];
   const corr = (fc, lo, hi, bias = 0) => clamp((preset.eqTarget[fc] - rel(fc)) * 0.6 + bias, lo, hi);
   const hpf = clamp(an.f0Low * 0.72, mode === "vo" ? 60 : 75, 150) + ROLES[role].hpBoost;
+  // Corrective EQ only cuts the low-mids: boosting 250/500 Hz is what makes a vocal sound boxy,
+  // "in a barrel". The top is never pulled down on a rap vocal (that sounds dull, "in a tunnel");
+  // harsh S sounds are the de-esser's job.
   return {
     hpf: Math.round(hpf),
-    mud: +corr(250, -5, 2).toFixed(1),
-    box: +corr(500, -4, 1.5).toFixed(1),
-    presence: +corr(3200, -3, 4, mode === "rap" ? 0.8 : 0).toFixed(1),
-    air: +corr(10000, -3, 4.5, mode === "rap" ? 0.5 : 0).toFixed(1),
+    mud: +corr(250, -5, 0).toFixed(1),
+    box: +corr(500, -4, 0).toFixed(1),
+    presence: +corr(3200, mode === "rap" ? -1.5 : -3, 4, mode === "rap" ? 0.8 : 0).toFixed(1),
+    air: +corr(10000, mode === "rap" ? 0 : -3, 4.5, mode === "rap" ? 0.5 : 0).toFixed(1),
   };
 }
 

@@ -25,6 +25,7 @@ node run.mjs stems song           # just some suites
 | booth | Enter/Space never re-press buttons (marker bug), 🎧 Monitor, sync test maths (180 / 320 ms, uneven, too few), track timing nudge, scroll bar, ⇤ Start |
 | package | `.mvbooth` round trip: 24-bit precision with peaks above full scale kept, model intact, unused takes dropped, bad files refused, export → open in a fresh browser |
 | makesong | Make my song: refusal with nothing recorded, working state, mix + WAV + MP3 from one click, checklist ticks, header one row |
+| tone | thin/dark/bright/boomy voices: Automix EQ never boosts 250/500 Hz or cuts air on rap; clean takes skip de-noise |
 | single | the self-contained `dist/index.html` alone (Netlify single-file upload) |
 | studio | Studio tune through the local backend (needs `backend\start-backend.bat`) |
 

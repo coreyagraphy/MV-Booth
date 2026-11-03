@@ -304,7 +304,7 @@ export function frameRmsDb(x, hop, win = hop * 2) {
  * frames, then applies a smoothed Wiener-style mask. Returns
  * `{ out, snrDb, applied, reductionDb }`.
  */
-export async function denoise(x, fs, { floorDb = -14, onProgress } = {}) {
+export async function denoise(x, fs, { floorDb = -14, onProgress, cleanSnrDb = 48 } = {}) {
   const N = 2048;
   const H = N / 4;
   const win = hann(N);
@@ -312,7 +312,8 @@ export async function denoise(x, fs, { floorDb = -14, onProgress } = {}) {
   const noiseDb = percentile(rms, 0.1);
   const speechDb = percentile(rms, 0.95);
   const snrDb = speechDb - noiseDb;
-  if (!(snrDb < 48) || x.length < N * 4) {
+  // A take already this clean gains nothing from spectral gating, only its "underwater" artifacts.
+  if (!(snrDb < cleanSnrDb) || x.length < N * 4) {
     return { out: x, snrDb, applied: false, reductionDb: 0 };
   }
   const alpha = snrDb < 20 ? 2.2 : snrDb < 32 ? 1.7 : 1.3;
