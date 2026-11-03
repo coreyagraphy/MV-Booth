@@ -88,7 +88,7 @@ New to it? Click **? Guide** in the top bar (or press `?`) for a plain-language 
 | Sessions | Session name (top left): new, rename, duplicate, delete to trash (restorable for 30 days). Autosaves constantly. |
 
 ### Keyboard
-**Markers:** **M** or **+ Marker** adds one; double-click a marker on the ruler to rename or delete it; **Clear markers** (appears when there are any) removes them all, and Ctrl+Z brings them back.
+**Markers and the loop bar:** **M** or **+ Marker** adds a flag. To delete a flag (or every flag stacked in one spot) or the orange loop bar: click it so it turns teal, then press **Delete**, or just right-click it. **Clear markers** and **Clear loop** in the toolbar (shown when there's something to clear) remove them all. Ctrl+Z brings anything back. Double-click a flag to rename it.
 
 `Space` play / pause / pick up where you paused (works even right after clicking a button) · `Enter` stop (back to start point) · `Home` return to zero · `R` record · `L` loop · `P` punch · `C` click · `T` tap tempo · `X` split · `Delete` delete clip · `M` marker · `B` raw/mix · `E` export · `←/→` nudge a beat (Shift = bar) · `+/−` zoom · `F` fit · `Ctrl+Z` undo · `Ctrl+Shift+Z` redo · `Ctrl+S` save · `1–4` tools · `?` guide. While recording with the prompter open: `↓/↑` move the lyric line.
 

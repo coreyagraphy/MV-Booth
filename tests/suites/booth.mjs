@@ -68,6 +68,36 @@ await p.keyboard.press("Control+z");
 ok("…and Ctrl+Z brings them back", (await B(() => window.__booth.session.markers.length)) === nm);
 await p.click("#btnClearMarkers");
 
+// Deleting from the ruler: highlight + Delete, right-click, Clear loop.
+await p.click("#btnClearMarkers").catch(() => {});
+await B(() => window.__booth.seek(3));
+for (let i = 0; i < 3; i++) await p.keyboard.press("m"); // three stacked flags in one spot (the old bug's leftovers)
+const rb = await p.locator("#ruler").boundingBox();
+const fx = await B(() => { const v = window.__booth.ui.view; return (3 - v.start) * v.pps; });
+await p.mouse.click(rb.x + fx + 3, rb.y + 12);
+ok("clicking a flag highlights it (all stacked flags)", await B(() => window.__booth.ui.selRuler?.kind === "markers" && window.__booth.ui.selRuler.ts.length === 3));
+await p.keyboard.press("Delete");
+ok("Delete removes the highlighted flags", (await B(() => window.__booth.session.markers.length)) === 0);
+await p.keyboard.press("Control+z");
+ok("…undo brings them back", (await B(() => window.__booth.session.markers.length)) === 3);
+const ph0 = await B(() => window.__booth.ui.playhead);
+await p.mouse.click(rb.x + fx + 3, rb.y + 12, { button: "right" });
+ok("right-click a flag deletes it, without moving the playhead", (await B(() => window.__booth.session.markers.length)) === 0 && (await B(() => window.__booth.ui.playhead)) === ph0);
+await p.mouse.move(rb.x + 150, rb.y + 15); await p.mouse.down(); await p.mouse.move(rb.x + 400, rb.y + 15, { steps: 6 }); await p.mouse.up();
+ok("Clear loop button appears when there is a loop", !(await B(() => document.querySelector("#btnClearLoop").hidden)));
+await p.mouse.click(rb.x + 300, rb.y + 3);
+ok("clicking the orange loop bar highlights it", await B(() => window.__booth.ui.selRuler?.kind === "loop"));
+await p.keyboard.press("Delete");
+ok("Delete removes the loop", await B(() => !(window.__booth.session.loop.end > window.__booth.session.loop.start) && !window.__booth.session.loop.on));
+await p.keyboard.press("Control+z");
+await p.mouse.click(rb.x + 300, rb.y + 3, { button: "right" });
+ok("right-click the loop bar removes it too", await B(() => !(window.__booth.session.loop.end > window.__booth.session.loop.start)) && (await B(() => document.querySelector("#btnClearLoop").hidden)));
+await p.keyboard.press("Control+z");
+await p.click("#btnClearLoop");
+ok("Clear loop button removes it", await B(() => !(window.__booth.session.loop.end > window.__booth.session.loop.start)));
+const fresh = await B(async () => (await import("./js/session.js")).newSession().loop);
+ok("new sessions start without a ghost loop region", !(fresh.end > fresh.start) && !fresh.on, JSON.stringify(fresh));
+
 // Monitoring.
 await p.click("#btnMonitor"); await p.waitForTimeout(400);
 const mon = await B(() => ({ chip: document.querySelector("#btnMonitor").classList.contains("on"), box: document.querySelector("#monitor").checked, live: !!window.__booth.mic.node, gain: window.__booth.mic.monitor.gain.value }));

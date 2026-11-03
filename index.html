@@ -94,6 +94,7 @@
           <button class="tb" id="btnDelClip" title="Delete the selected clip (Delete)">Delete</button>
           <button class="tb" id="btnMarker" title="Add a marker at the playhead (M)">+ Marker</button>
           <button class="tb" id="btnClearMarkers" title="Remove every marker in this session (Ctrl+Z brings them back). Double-click one marker on the ruler to rename or delete just that one." hidden>Clear markers</button>
+          <button class="tb" id="btnClearLoop" title="Remove the loop region (the orange bar on the ruler). Ctrl+Z brings it back." hidden>Clear loop</button>
           <span class="sep"></span>
           <label class="tb-field" title="Count-in before recording">Count-in
             <select id="countIn"><option value="0">Off</option><option value="1">1 bar</option><option value="2">2 bars</option></select>
@@ -122,7 +123,7 @@
         <div class="hint" id="hint"></div>
         <div class="rec-banner" id="recBanner" hidden><i></i><b id="recText">RECORDING</b><span id="recSub"></span><em><u id="recLvl"></u></em></div>
         <div class="timeline" id="timeline">
-          <div class="ruler-row"><div class="ruler-head" id="rulerHead">BARS</div><canvas id="ruler"></canvas></div>
+          <div class="ruler-row"><div class="ruler-head" id="rulerHead">BARS</div><canvas id="ruler" title="Ruler · click: move the playhead · drag: set a loop (Shift: punch) · click a flag or the orange loop bar to highlight it, then press Delete (or right-click it) · double-click a flag: rename"></canvas></div>
           <div class="lanes" id="lanes"></div>
           <div class="playhead" id="playhead"></div>
           <div class="empty" id="emptyHint">

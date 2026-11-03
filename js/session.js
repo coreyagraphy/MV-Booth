@@ -21,7 +21,7 @@ export function newSession(name = "Untitled session") {
   return {
     id: uid(), name, created: now, updated: now, mode: "rap",
     settings: structuredClone(DEFAULT_SETTINGS),
-    lyrics: "", markers: [], loop: { on: false, start: 0, end: 8 }, punch: { on: false, in: 0, out: 0 },
+    lyrics: "", markers: [], loop: { on: false, start: 0, end: 0 }, punch: { on: false, in: 0, out: 0 },
     master: { volumeDb: 0 }, beats: [], tracks: [],
   };
 }

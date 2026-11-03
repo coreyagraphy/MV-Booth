@@ -15,7 +15,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Loop playback over a region | partial | **Built**: drag on the ruler to set it (a deliberate 14 px drag; a slip while clicking doesn't), L toggles, sample-accurate pass scheduling; the loop only takes over when playback starts inside it (2.7.1) |
 | Loop record → one take per pass | ✓ | **Built**: a stopped-early final pass is kept as a take but not put on the track |
 | Nudge playhead (beat / bar) | ✓ | **Built**: ← → (Shift = bar) |
-| Markers | ✗ | **Built**: M adds; click on the ruler jumps; double-click renames or deletes; Clear markers removes all (undoable); Song tab drops named Intro/Verse/Hook/Bridge/Outro markers |
+| Markers | ✗ | **Built**: M adds; click on the ruler jumps; double-click renames or deletes; click a flag or the loop bar to highlight it, then Delete; right-click deletes; Clear markers / Clear loop remove all (all undoable, 2.7.2); Song tab drops named Intro/Verse/Hook/Bridge/Outro markers |
 | Guided start-to-finish song workflow | ✗ | **Built (2.4)**: Song tab checklist (10 steps, auto-ticks, highlights the next step) |
 | One-click finish | ✗ | **Built (2.7)**: Make my song = Automix (current preset) → master WAV + MP3; refuses politely with nothing recorded; header stays one row down to 1440 px |
 | Punch in/out with pre-roll / post-roll | ✗ | **Built (2.2)**: Shift-drag or selection sets the range (red), P arms, 1–2 bar pre-roll, sample-exact latency-compensated capture, 1 bar post-roll, auto-stop, new take + 10 ms crossfades |

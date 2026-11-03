@@ -1654,8 +1654,14 @@ function drawRuler() {
   $("rulerHead").textContent = B ? "BARS" : "TIME";
   if (session.loop.end > session.loop.start) {
     const lx0 = t2x(session.loop.start), lx1 = t2x(session.loop.end);
-    g.fillStyle = session.loop.on ? "rgba(255,122,26,0.55)" : "rgba(255,255,255,0.12)";
-    g.fillRect(lx0, 0, lx1 - lx0, 5);
+    if (ui.selRuler?.kind === "loop") {
+      // Highlighted: teal and taller, ready for Delete.
+      g.fillStyle = "rgba(18,224,208,0.85)";
+      g.fillRect(lx0, 0, lx1 - lx0, 8);
+    } else {
+      g.fillStyle = session.loop.on ? "rgba(255,122,26,0.55)" : "rgba(255,255,255,0.12)";
+      g.fillRect(lx0, 0, lx1 - lx0, 5);
+    }
   }
   if (session.punch.out > session.punch.in) {
     const px0 = t2x(session.punch.in), px1 = t2x(session.punch.out);
@@ -1684,16 +1690,18 @@ function drawRuler() {
       g.fillText(fmtTime(s).replace(/\.0$/, ""), x + 4, 21);
     }
   }
+  const selTs = ui.selRuler?.kind === "markers" ? ui.selRuler.ts : [];
   for (const m of session.markers) {
     const x = t2x(m.t);
-    g.fillStyle = "#ff7a1a";
+    const sel = selTs.some((t) => Math.abs(t - m.t) < 1e-6);
+    g.fillStyle = sel ? "#12e0d0" : "#ff7a1a";
     g.beginPath();
     g.moveTo(x, 6);
     g.lineTo(x + 7, 6);
     g.lineTo(x + 7, 14);
     g.lineTo(x, 18);
     g.fill();
-    g.fillStyle = "#ffb35c";
+    g.fillStyle = sel ? "#ffffff" : "#ffb35c";
     g.fillText(m.name, x + 10, 15);
   }
 }
@@ -2647,6 +2655,7 @@ function renderAll() {
   $("btnPunch").classList.toggle("on", !!session.punch?.on);
   $("btnSnap").classList.toggle("on", !!S_().snap);
   $("btnClearMarkers").hidden = !session.markers.length;
+  $("btnClearLoop").hidden = !(session.loop.end > session.loop.start);
   renderLanes();
   // Side panels only rebuild while on screen; a hidden one is rebuilt when its tab opens.
   for (const [name, fn] of Object.entries(PANELS)) {
@@ -2858,6 +2867,7 @@ function bindControls() {
   $("btnSplit").onclick = splitAtPlayhead;
   $("btnDelClip").onclick = deleteClip;
   $("btnMarker").onclick = () => addMarker();
+  $("btnClearLoop").onclick = clearLoop;
   $("btnClearMarkers").onclick = () => {
     const n = session.markers.length;
     if (!n) return;
@@ -3019,7 +3029,22 @@ function bindControls() {
 
   // Ruler: click = seek, drag = set loop region, click a marker = jump.
   const ruler = $("ruler");
+  // Deleting from the ruler: right-click a flag (every flag stacked there goes at once) or the loop.
+  const rx = (e) => e.clientX - ruler.getBoundingClientRect().left;
+  const markersAt = (x) => session.markers.filter((m) => Math.abs(t2x(m.t) - x) < 10);
+  const overLoop = (x) => session.loop.end > session.loop.start && x >= t2x(session.loop.start) - 4 && x <= t2x(session.loop.end) + 4;
+  const overPunch = (x) => session.punch.out > session.punch.in && x >= t2x(session.punch.in) - 4 && x <= t2x(session.punch.out) + 4;
+  ruler.oncontextmenu = (e) => {
+    e.preventDefault();
+    const x = rx(e), ms = markersAt(x);
+    if (ms.length) {
+      edit(ms.length > 1 ? `Delete ${ms.length} markers` : "Delete marker", () => (session.markers = session.markers.filter((m) => !ms.includes(m))), { audioChange: false });
+      toast(`Deleted ${ms.length > 1 ? `${ms.length} stacked markers` : `marker "${ms[0].name}"`} (Ctrl+Z brings ${ms.length > 1 ? "them" : "it"} back)`);
+    } else if (overLoop(x)) clearLoop();
+    else if (overPunch(x)) clearPunch();
+  };
   ruler.onpointerdown = (e) => {
+    if (e.button !== 0) return; // right-click deletes (above); it must not seek or start a loop drag
     const r = ruler.getBoundingClientRect();
     const x0 = e.clientX - r.left;
     const mk = session.markers.find((m) => Math.abs(t2x(m.t) - x0) < 8);
@@ -3051,13 +3076,21 @@ function bindControls() {
         save();
         updateUndo();
         toast(e.shiftKey ? `Punch ${fmtTime(session.punch.in)} → ${fmtTime(session.punch.out)} (P toggles)` : `Loop ${fmtTime(session.loop.start)} – ${fmtTime(session.loop.end)} (L toggles · Shift-drag sets punch)`);
-      } else seek(mk ? mk.t : x2t(x0));
+      } else {
+        // A plain click on a flag or the loop bar also highlights it, so Delete removes it.
+        const ms = markersAt(x0);
+        const y0 = e.clientY - r.top;
+        if (ms.length) selectRuler({ kind: "markers", ts: ms.map((m) => m.t) }, `${ms.length > 1 ? `${ms.length} stacked markers` : `Marker "${ms[0].name}"`} selected: press Delete to remove`);
+        else if (y0 <= 10 && overLoop(x0)) selectRuler({ kind: "loop" }, "Loop selected: press Delete to remove it");
+        else selectRuler(null);
+        seek(mk ? mk.t : x2t(x0));
+      }
     };
   };
   ruler.ondblclick = (e) => {
     const r = ruler.getBoundingClientRect();
     const mk = session.markers.find((m) => Math.abs(t2x(m.t) - (e.clientX - r.left)) < 8);
-    if (!mk) return;
+    if (!mk) return overLoop(e.clientX - r.left) && clearLoop();
     const name = prompt("Marker name (empty deletes)", mk.name);
     if (name === null) return;
     edit(name ? "Rename marker" : "Delete marker", () => {
@@ -3123,6 +3156,9 @@ function bindControls() {
     if (el && el.title) showHint(esc(el.title).replace(/^([^:·]{2,40})(:|·)/, "<b>$1</b>$2"));
     else if (e.target.closest?.(".lane canvas")) showHint();
   });
+  document.addEventListener("pointerdown", (e) => {
+    if (ui.selRuler && e.target.id !== "ruler") selectRuler(null);
+  }, true);
   // A mouse click must not leave a button focused: Enter (Stop) or Space would "press" it again,
   // e.g. one click on + Marker turned every Stop into a new marker. Keyboard users (Tab) keep focus.
   document.addEventListener("click", (e) => {
@@ -3168,7 +3204,8 @@ function bindControls() {
     else if (k === "x" || k === "X") splitAtPlayhead();
     else if (k === "m" || k === "M") addMarker();
     else if (k === "f" || k === "F") fitView();
-    else if (k === "Delete" || k === "Backspace") deleteClip();
+    else if (k === "Delete" || k === "Backspace") ui.selRuler ? deleteRulerSelection() : deleteClip();
+    else if (k === "Escape" && ui.selRuler) selectRuler(null);
     else if (k === "Home") returnToZero();
     else if (k === "+" || k === "=") zoom(1.5);
     else if (k === "-" || k === "_") zoom(1 / 1.5);
@@ -3195,6 +3232,31 @@ function bindControls() {
     }, 120);
   });
   navigator.mediaDevices?.addEventListener?.("devicechange", listDevices);
+}
+function selectRuler(sel, msg) {
+  ui.selRuler = sel;
+  if (msg) status(msg);
+  drawRuler();
+}
+function deleteRulerSelection() {
+  const sel = ui.selRuler;
+  ui.selRuler = null;
+  if (sel.kind === "loop") return clearLoop();
+  const gone = session.markers.filter((m) => sel.ts.some((t) => Math.abs(t - m.t) < 1e-6));
+  if (!gone.length) return drawRuler();
+  edit(gone.length > 1 ? `Delete ${gone.length} markers` : "Delete marker", () => (session.markers = session.markers.filter((m) => !gone.includes(m))), { audioChange: false });
+  toast(`Deleted ${gone.length > 1 ? `${gone.length} markers` : `marker "${gone[0].name}"`} (Ctrl+Z brings ${gone.length > 1 ? "them" : "it"} back)`);
+}
+function clearLoop() {
+  if (!(session.loop.end > session.loop.start)) return;
+  stopPlayback(false);
+  edit("Clear loop", () => (session.loop = { on: false, start: 0, end: 0 }), { audioChange: false });
+  toast("Loop removed (Ctrl+Z brings it back)");
+}
+function clearPunch() {
+  if (!(session.punch.out > session.punch.in)) return;
+  edit("Clear punch", () => (session.punch = { on: false, in: 0, out: 0 }), { audioChange: false });
+  toast("Punch range removed (Ctrl+Z brings it back)");
 }
 function addMarker(name) {
   const t = currentPos();
