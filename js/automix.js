@@ -68,7 +68,7 @@ export const MODES = {
 
 export const ROLES = {
   lead: { label: "Lead", levelDb: 0, pan: 0, hpBoost: 0, reverbDb: 0, delayDb: 0, deessMult: 1 },
-  double: { label: "Double", levelDb: -7, pan: 0.38, hpBoost: 60, reverbDb: -4, delayDb: -60, deessMult: 1.7 },
+  double: { label: "Double", levelDb: -4.5, pan: 0.38, hpBoost: 60, reverbDb: -4, delayDb: -60, deessMult: 1.7 },
   adlib: { label: "Ad-lib", levelDb: -5, pan: 0.6, hpBoost: 40, reverbDb: 5, delayDb: 6, deessMult: 1.2 },
   hook: { label: "Hook stack", levelDb: -3, pan: 0.25, hpBoost: 20, reverbDb: 2, delayDb: -3, deessMult: 1.3 },
   octave: { label: "Octave", levelDb: -13, pan: 0, hpBoost: 0, reverbDb: -6, delayDb: -60, deessMult: 2, hidden: true },
@@ -595,9 +595,13 @@ export async function renderMix({ vocals, beats = [], fs, mode, settings, length
   const activity = new Float32Array(Math.ceil(length / HOP));
   let panFlip = 1;
   let throws = 0;
+  // A recorded double you can hear: one double sits centred under the lead (panned alone it is
+  // lopsided and masked); two or more spread left/right. AI doubles stay subtler (they are copies).
+  const recordedDoubles = vocals.filter(({ track }) => track.role === "double" && !track.virtual).length;
   for (const { track, processed } of vocals) {
     const role = ROLES[track.role] || ROLES.lead;
-    const targetLufs = preset.vocalLufs + role.levelDb + (track.trimDb || 0);
+    const aiDouble = track.virtual && track.role === "double";
+    const targetLufs = preset.vocalLufs + role.levelDb + (aiDouble ? -2.5 : 0) + (track.trimDb || 0);
     // Silence (−∞) means nothing to level: leave it at unity rather than +30 dB.
     const gainDb = Number.isFinite(processed.lufs) ? clamp(targetLufs - processed.lufs, -30, 30) : 0;
     if (track.role === "lead") leadLufs.push(targetLufs);
@@ -606,8 +610,11 @@ export async function renderMix({ vocals, beats = [], fs, mode, settings, length
       const off = Math.round(((track.offset || 0) * fs) / HOP);
       for (let i = 0; i < env.length && i + off < activity.length; i++) activity[i + off] = Math.max(activity[i + off], env[i]);
     }
-    const panAmt = track.pan ? track.pan : role.pan * panFlip;
-    if (role.pan) panFlip *= -1;
+    const loneDouble = track.role === "double" && !track.virtual && recordedDoubles === 1 && !track.pan;
+    const panAmt = track.pan ? track.pan : loneDouble ? 0 : role.pan * panFlip;
+    if (role.pan && !loneDouble) panFlip *= -1;
+    if (track.role === "double" && !track.virtual && !(only && only !== track.id))
+      notes.push(`${track.name}: ${(-(role.levelDb + (track.trimDb || 0))).toFixed(1)} dB under the lead, ${panAmt ? `panned ${panAmt > 0 ? "right" : "left"} ${Math.round(Math.abs(panAmt) * 100)}%` : "centred"} (${recordedDoubles === 1 ? "one double: centred so it thickens the lead evenly" : "doubles spread left/right"})`);
     if (only && only !== track.id) continue;
     const src = ctx.createBufferSource();
     src.buffer = processed.buffer;

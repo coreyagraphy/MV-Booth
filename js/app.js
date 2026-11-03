@@ -1181,7 +1181,10 @@ async function automix() {
 }
 
 // ---------------------------------------------------------------- Make my song
-/** One click from a recorded song to files: Automix with the current preset, then master WAV + MP3. */
+/**
+ * One click from a recorded song to a finished mix: Automix with the current preset, then a
+ * "Your song is mixed" bar to listen first (the mix, from the top) and save WAV + MP3 only if it's worth it.
+ */
 async function makeMySong() {
   if (guardBusy("making the song")) return;
   const { tracks } = engineInputs();
@@ -1189,20 +1192,36 @@ async function makeMySong() {
   const btn = $("btnMakeSong");
   btn.disabled = true;
   btn.classList.add("working");
+  $("songBar").hidden = true;
   try {
     await automix();
     if (!ui.master || ui.stale) throw new Error(ui.cancel?.cancelled ? "cancelled" : "the mix didn't finish");
-    await exportAs("wav");
-    await exportAs("mp3");
     showTab("song");
-    status(`Your song is done: WAV + MP3 are in your Downloads (${ui.run.mix.lufs.toFixed(1)} LUFS, true peak ${(ui.run.mix.truePeak ?? ui.run.mix.peak).toFixed(1)} dBTP). Press Space to hear the mix, B to compare with the raw take, and change a preset in the Mixer tab then press Make my song again if you want it different.`);
-    toast("Song made: WAV + MP3 saved");
+    $("songBarInfo").textContent = `${ui.run.mix.lufs.toFixed(1)} LUFS · true peak ${(ui.run.mix.truePeak ?? ui.run.mix.peak).toFixed(1)} dBTP · ${fmtTime(ui.master.duration)}`;
+    $("songBar").hidden = false;
+    status("Your song is mixed. Press ▶ Listen to hear it from the top (B compares with your raw take), then Save WAV + MP3 if you like it, or change a preset in the Mixer tab and press Make my song again.");
   } catch (err) {
     if (err.message !== "cancelled") toast(`Make my song stopped: ${err.message}`);
   } finally {
     btn.disabled = false;
     btn.classList.remove("working");
   }
+}
+function listenToSong() {
+  if (!ui.master || ui.stale) return toast("Press Make my song first.");
+  if (ui.playing) return pause();
+  setAB("B");
+  seek(0);
+  startPlayback(0);
+}
+async function saveSong() {
+  if (!ui.master || ui.stale) return toast("The mix is out of date: press Make my song again.");
+  stopPlayback(false);
+  await exportAs("wav");
+  await exportAs("mp3");
+  $("songBar").hidden = true;
+  status("Saved: WAV + MP3 are in your Downloads.");
+  toast("Song saved: WAV + MP3");
 }
 
 // ---------------------------------------------------------------- vocal cleanup (Clean tab)
@@ -2876,6 +2895,9 @@ function bindControls() {
   };
   $("btnMakeSong").onclick = makeMySong;
   $("btnMakeSongTab").onclick = makeMySong;
+  $("btnSongPlay").onclick = listenToSong;
+  $("btnSongSave").onclick = () => saveSong().catch((e) => toast(`Save failed: ${e.message}`));
+  $("btnSongClose").onclick = () => ($("songBar").hidden = true);
   $("btnZoomIn").onclick = () => zoom(1.5);
   $("btnZoomOut").onclick = () => zoom(1 / 1.5);
   $("btnToStart").onclick = returnToZero;
@@ -3346,4 +3368,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, mic, automix, makeMySong, checkForUpdate, exportPackage, importPackage, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { get session() { return session; }, ui, audio, mic, automix, makeMySong, listenToSong, saveSong, checkForUpdate, exportPackage, importPackage, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };

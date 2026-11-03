@@ -479,3 +479,8 @@ header .core.make .short { display: none; }
 @media (max-width: 1500px) {
   .brand { display: none; }
 }
+
+/* Make my song result: sits above the update notice so both can show. */
+.update-bar.song-bar { bottom: 152px; border-color: rgba(255, 122, 26, 0.5); }
+.update-bar.song-bar i { background: var(--orange); box-shadow: 0 0 10px var(--orange); }
+.update-bar.song-bar .core { padding: 8px 14px; font-size: 10px; letter-spacing: 0.14em; }

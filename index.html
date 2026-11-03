@@ -66,7 +66,7 @@
         <button data-ab="B" title="The engine's mix (B toggles)">Mix</button>
       </div>
       <button id="btnAutomix" class="core">Automix</button>
-      <button id="btnMakeSong" class="core make" title="Make my song: Automix with the current preset, then save the master as WAV + MP3 (Downloads)"><span class="full">Make my song</span><span class="short">▶ Song</span></button>
+      <button id="btnMakeSong" class="core make" title="Make my song: Automix with the current preset, then listen before you save WAV + MP3"><span class="full">Make my song</span><span class="short">▶ Song</span></button>
     </header>
 
     <main>
@@ -155,8 +155,8 @@
           <div class="tab" data-panel="song">
             <p class="explain">Everything to take a song from nothing to a finished master, in order. Steps tick themselves off as you go; the buttons on each step do it for you. Optional steps can be skipped.</p>
             <div class="make-row">
-              <button id="btnMakeSongTab" class="btn core make" title="Automix with the current preset, then save WAV + MP3">▶ Make my song</button>
-              <span class="muted small">Recorded? This does the rest: clean, tune, doubles, mix, master, and saves WAV + MP3. Pick a feel first in Mixer → Quick presets (Rap · Upfront is the default).</span>
+              <button id="btnMakeSongTab" class="btn core make" title="Automix with the current preset, then listen before you save WAV + MP3">▶ Make my song</button>
+              <span class="muted small">Recorded? This does the rest: clean, tune, doubles, mix, master. Then listen, and save WAV + MP3 if you like it. Pick a feel first in Mixer → Quick presets (Rap · Upfront is the default).</span>
             </div>
             <ol class="steps" id="songSteps"></ol>
           </div>
@@ -330,6 +330,12 @@
       </div>
     </div>
     <div class="toast glass" id="toast" role="status" aria-live="polite"></div>
+    <div class="update-bar song-bar glass" id="songBar" role="status" aria-live="polite" hidden>
+      <i></i><b>Your song is mixed</b><span id="songBarInfo"></span>
+      <button id="btnSongPlay" class="btn" title="Play the mix from the top (Space pauses, B compares with your raw take)">▶ Listen</button>
+      <button id="btnSongSave" class="btn core make" title="Save the master as WAV + MP3 to your Downloads">Save WAV + MP3</button>
+      <button id="btnSongClose" class="tb" title="Hide this bar (Export ▾ still saves the mix)">Close</button>
+    </div>
     <div class="update-bar glass" id="updateBar" role="status" aria-live="polite" hidden>
       <i></i><b>New version of MV Booth is live</b><span>Your session is saved before it reloads.</span>
       <button id="btnUpdate" class="btn" title="Save and reload into the new version">Reload</button>
