@@ -37,8 +37,10 @@ export const MODES = {
     rideAmount: 0.75,
     deessMax: 8,
     comp: { ratio: 4, attack: 0.004, release: 0.08, knee: 6, threshold: -25 },
-    grit: 0.18,
-    eqTarget: { 250: 5, 500: 3.5, 1000: 0, 2000: -3.5, 3200: -5.5, 6000: -8.5, 10000: -13 },
+    grit: 0.12,
+    // Modern rap vocal shape (per-octave, relative to 1 kHz): lean low-mids, forward presence, open air.
+    // The old curve (250 +5, 500 +3.5, 10k -13) let dark, boxy takes through as "on target".
+    eqTarget: { 250: 3, 500: 1, 1000: 0, 2000: -3, 3200: -4.5, 6000: -7, 10000: -10.5 },
     reverb: { seconds: 1.15, preDelay: 0.022, sendDb: -17 },
     delay: { division: 0.75, sendDb: -24, feedback: 0.28 },
     beatOffsetLu: -1, // beat loudness relative to the lead vocal
@@ -55,7 +57,7 @@ export const MODES = {
     deessMax: 7,
     comp: { ratio: 3, attack: 0.008, release: 0.14, knee: 10, threshold: -24 },
     grit: 0,
-    eqTarget: { 250: 6, 500: 4, 1000: 0, 2000: -4, 3200: -6.5, 6000: -9.5, 10000: -15 },
+    eqTarget: { 250: 4.5, 500: 2.5, 1000: 0, 2000: -4, 3200: -6, 6000: -9, 10000: -14 },
     reverb: { seconds: 0.35, preDelay: 0.008, sendDb: -28 },
     delay: null,
     beatOffsetLu: -13, // music bed sits well under the voice
@@ -733,7 +735,8 @@ export async function renderMix({ vocals, beats = [], fs, mode, settings, length
             carveF = fc === 1000 ? 1400 : fc === 2000 ? 2400 : 3400;
           }
         }
-        const carveDb = clamp(2 + (worst + 8) * 0.25, 1.5, 5) * role.carve;
+        // Gentle: a deep carve leaves a hole the vocal floats above instead of sitting in.
+        const carveDb = clamp(1 + (worst + 8) * 0.2, 1, 3) * role.carve;
         const carve = ctx.createBiquadFilter();
         carve.type = "peaking";
         carve.frequency.value = carveF;
