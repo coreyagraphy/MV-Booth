@@ -4,7 +4,7 @@ Audited at `904a426` (MV Booth 2.7.5), 2026-11-11. No code was changed for this 
 
 **How it was tested.** `cd tests && npm test`: lint + 13 browser suites, all green (dsp 11, declick 6, daw 24, punch 9, ux 16, song 12, stems 18, fixes 9, booth 38, package 10, makesong 15, tone 8, single 2). Two extra probes were run for this audit against the real app in headless Chromium (results in section 4). "Test" in the Evidence column means one of those suites exercises the feature; a `file:line` means it was confirmed by reading the code only.
 
-**What could not be tested here.** A real microphone, real headphones, Windows, and the MAONO itself: the suites use a simulated mic. The Studio tune backend could not be installed in the audit container (PyTorch's download host is blocked there), so its row is marked "not re-verified".
+**What could not be tested here.** A real microphone, real headphones, Windows, and the MAONO itself: the suites use a simulated mic. The Studio tune backend was installed on Linux (Python 3.13, CPU) and its suite passes (studio: 8 checks); the Windows install from `setup.bat` cannot be run from here.
 
 Status: **Built** (works, tested) · **Partial** · **Missing** · **Broken**. Impact = how much it changes the sound of Corey's vocal. Effort = S (hours), M (a day or two), L (several days).
 
@@ -113,7 +113,7 @@ Order is fixed: Tune → Align → Double → Clean → Tone → Dynamics → Sp
 
 | Area | Feature | Status | Evidence | Impact | Effort |
 |---|---|---|---|---|---|
-| Backend | CREPE + WORLD tuning, low-confidence regions untouched | Built, **not re-verified in this audit** | `backend/tuner.py:44`, `:273`; the `studio` suite exists but the backend could not be installed in the audit container | High | - |
+| Backend | CREPE + WORLD tuning, low-confidence regions untouched | Built | `backend/tuner.py:44`, `:273`; studio suite (8 checks) passes against a live backend (`/health`: torch, torchcrepe, pyworld) | High | - |
 | Backend | Honest offline status in the UI | Built | `js/app.js:1379-1391`: shows "offline" with what to run, and disables the button | Med | - |
 | Backend | Clean install from `setup.bat` on Windows, Python 3.11 | Unverified | Cannot be run from here. The script picks 3.12 → 3.11 → 3.10 and explains a pyworld build failure (`backend/setup.bat`). Needs one run on Corey's PC | Med | S |
 | Backend | Pinned dependencies | Partial | `backend/requirements.txt` uses `>=`, not exact versions, so a future install can pull different code | Low | S |
@@ -169,4 +169,4 @@ All on target (−14) and under the −1 dBTP ceiling.
 
 ## 5. Broken
 
-Nothing is broken in the sense of failing or crashing: every suite passes with zero page errors. One thing behaves wrongly for the sound: gap 1 above (Dynamics raises room sound). Two things are unverified rather than broken: the backend install on Windows, and the backend suite in this audit run.
+Nothing is broken in the sense of failing or crashing: every suite passes with zero page errors. One thing behaves wrongly for the sound: gap 1 above (Dynamics raises room sound). One thing is unverified rather than broken: the backend install on Windows from `setup.bat`.
