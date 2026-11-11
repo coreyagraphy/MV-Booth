@@ -26,6 +26,7 @@ node run.mjs stems song           # just some suites
 | package | `.mvbooth` round trip: 24-bit precision with peaks above full scale kept, model intact, unused takes dropped, bad files refused, export → open in a fresh browser |
 | makesong | Make my song: refusal with nothing recorded, working state, mix + WAV + MP3 from one click, checklist ticks, header one row |
 | tone | thin/dark/bright/boomy voices: Automix EQ never boosts 250/500 Hz or cuts air on rap; clean takes skip de-noise |
+| room | Automix does not raise room sound after phrases (≤ +3 dB on roomy takes) and does not chop the voice; mic check verdicts; 48 kHz engine; Mic check button |
 | single | the self-contained `dist/index.html` alone (Netlify single-file upload) |
 | studio | Studio tune through the local backend (needs `backend\start-backend.bat`) |
 

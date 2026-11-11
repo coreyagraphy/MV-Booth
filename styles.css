@@ -231,6 +231,14 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
 .report section.learn h4 { color: var(--amber); }
 .report ul { margin: 0; padding-left: 16px; color: #c3ccd5; }
 .report li { margin: 3px 0; }
+.report ul.mc { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.report ul.mc li { margin: 0; padding-left: 12px; border-left: 3px solid #3b4652; display: flex; flex-direction: column; gap: 2px; }
+.report ul.mc li b { color: #e8edf2; font-weight: 600; }
+.report ul.mc li.good { border-color: var(--teal); }
+.report ul.mc li.warn { border-color: var(--amber); }
+.report ul.mc li.bad { border-color: #ff4d4d; }
+.report ul.mc li.bad b { color: #ff8a8a; }
+.report .mc-now { margin: 0; color: #e8edf2; font-size: 13.5px; }
 .report .transcript { margin-top: 8px; color: var(--dim); font-style: italic; }
 .muted { color: var(--dim); }
 .stale { color: var(--amber); }

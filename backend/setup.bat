@@ -1,9 +1,9 @@
 @echo off
-rem One-time setup for the MV Booth tuning backend (Python 3.10-3.12 recommended).
+rem One-time setup for the MV Booth tuning backend (Python 3.11 or 3.12).
 cd /d "%~dp0"
 rem Prefer a Python that has prebuilt pyworld wheels; the newest one may need a C++ compiler.
 set "PY="
-for %%V in (3.12 3.11 3.10) do if not defined PY py -%%V -c "" >nul 2>nul && set "PY=py -%%V"
+for %%V in (3.12 3.11) do if not defined PY py -%%V -c "" >nul 2>nul && set "PY=py -%%V"
 if not defined PY where py >nul 2>nul && set "PY=py -3"
 if not defined PY where python >nul 2>nul && set "PY=python"
 if not defined PY goto nopython
@@ -12,8 +12,8 @@ if not exist .venv\Scripts\python.exe %PY% -m venv .venv
 if not exist .venv\Scripts\python.exe goto nopython
 .venv\Scripts\python -m pip install --upgrade pip
 rem CPU-only torch keeps the download small; no GPU needed for offline tuning.
-.venv\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-if errorlevel 1 goto failed
+rem (If that download fails, the next step gets the same version from the main index instead.)
+.venv\Scripts\python -m pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
 .venv\Scripts\python -m pip install -r requirements.txt
 if errorlevel 1 goto pyworld
 .venv\Scripts\python -c "import torchcrepe, pyworld, torch; print('Backend ready.')"

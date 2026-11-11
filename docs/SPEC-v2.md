@@ -47,6 +47,8 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Recording clearly visible while it happens | ✗ | **Built (2.3)**: count-in / pre-roll / RECORDING / post-roll banner with time recorded and live input level, red timeline glow, live red waveform on the armed track |
 | Direct monitoring post-gain | ✓ | **Built**: 🎧 Monitor in the top bar (turns the mic on, remembered), round-trip readout, says how late it is on this setup (browser monitoring always takes the round trip) and points to sidetone / interface direct monitoring for zero delay, Bluetooth-headset warning |
 | Latency trim + auto-calibrate, stored per device | ✓ | **Built**: 4-click loopback (speakers) and, since 2.5.3, a clap-along **Sync test** for headsets (12 measured clicks, median onset, rejects uneven or missing claps); trim range −200…+600 ms for Bluetooth; per-track **Timing ◀ ▶** nudge for takes already recorded |
+| Mic check before recording | ✗ | **Built (2.8)**: Booth tab, 10 seconds (3 s silence, then a line said twice). Reports level / clipping, background noise and room sound, each with one instruction; nothing is saved |
+| 48 kHz recording | ✗ | **Built (2.8)**: the audio engine asks for 48 kHz (falls back to the device rate if refused); the Booth tab shows the recording rate and the mic's own rate, and says so when they differ |
 | Monitoring through FX (live reverb in headphones) | ✗ | Not built |
 
 ### Mixer
@@ -74,6 +76,7 @@ Revision of the "MV BOOTH 2.0 — Engineering Spec" (2026-10-14), checked agains
 | Double stage: detune, delay, −6 dB, or use the recorded double | ✓ | **Built**: ±9–11 cents, drifting 19–27 ms, optional octave |
 | Breath control | ✓ | **Built**: keep / reduce / remove per track (2.4) |
 | Vocal cleanup you can set (de-noise, de-ess, pop filter, de-click, hum) | ✗ | **Built (2.4)**: Clean tab per track; preview renders a non-destructive "· clean" take. De-click = isolated-spike detector + least-squares AR interpolation, reverted where it can't predict |
+| Room control (keep the room out of the vocal) | ✗ | **Built (2.8)**: the rider no longer boosts a level that is falling away from its last peak, and an expander holds the tail after each phrase down. Depth 5 dB on a dry take (covers what the compressor adds) up to 19 dB on a roomy one, set from the measured decay after phrases; the gate between phrases deepens to match. Reported per track |
 | RAW / MIX A/B | ✓ | **Built**: B key |
 
 ### Metering & loudness
@@ -134,6 +137,16 @@ The browser test drives the real UI in headless Chromium with a simulated mic. T
 2.5 stems suite (18 checks): three stems imported in one go with roles guessed, BPM from the drums, role change + undo, mute leaves a stem out of the mix, report treats each stem by role, master −14.2 LUFS / −1.0 dBTP, stem export = vocal + 3 beat stems with the 808 folded to exact mono, solo, one mixer strip per stem, remove + undo, persistence after reload.
 
 2.4 song/clean suite (12 checks): checklist order and next-step highlight, section markers, clean settings stored per track, cleaned take added with clips swapped and the raw take bit-identical, report lines for breaths / pop / de-click / hum, undo, master tone/width/ceiling applied (−14.2 LUFS, −2.0 dBTP with a −2 ceiling). De-click bench: 0 false triggers on two clean 12 s vocals; 20–23 of 30 injected clicks repaired (the rest are left alone because a repair would move the audio more than the click); median repair +8.5 to +9.2 dB.
+
+2.8 room suite (18 checks). Mic check verdicts on good / quiet / clipped / noisy / roomy / mild-room / silent recordings. Room sound through Automix, measured as the level 30–180 ms after each phrase relative to the phrase:
+
+| Take | Raw | Mix before 2.8 | Mix, 2.8 |
+|---|---|---|---|
+| Dry | −36.3 dB | −27.3 | −30.0 |
+| Mild room (reflections 14 dB under the voice) | −27.8 | −14.4 | −28.0 |
+| Roomy (8 dB under) | −23.3 | −10.0 | −26.5 |
+
+Limit: synthetic voice and room. Not yet confirmed on a real take from the MAONO, and not yet judged by ear.
 
 ### Performance (2.5.2, 3-minute song, lead + recorded double + AI doubles + beat, headless Chromium)
 

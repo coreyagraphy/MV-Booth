@@ -21,12 +21,22 @@ Wear headphones while recording so the beat doesn't bleed into the mic.
 
 A small local Python service does offline pitch correction with **CREPE** (pitch tracking) and the **WORLD** vocoder (formant-preserving resynthesis). It runs only on your PC (`127.0.0.1:8765`), with no cloud and no login.
 
-1. Install **Python 3.11** from python.org (tick "Add to PATH").
-2. Double-click **`backend\setup.bat`** once. It installs CPU-only torch, CREPE, pyworld, FastAPI.
+1. Install **Python 3.11 or 3.12** from python.org (tick "Add to PATH").
+2. Double-click **`backend\setup.bat`** once. It installs CPU-only torch, CREPE, pyworld, FastAPI, at fixed versions (`backend\requirements.txt`) so every install runs the same code.
    - If pyworld fails to build: install "Desktop development with C++" from the Visual C++ Build Tools and rerun, or `conda install -c conda-forge pyworld`.
 3. From then on the **MV Booth** shortcut starts the backend silently with the app. (`backend\start-backend.bat` runs it with a console if you want to watch it.)
 
 In the **Tune** tab, *Studio tune* shows a green dot when the backend is online. Select a take, set retune speed (0 = robot hard-tune), vibrato keep, amount, confidence threshold and formant preserve, then click **Studio-tune selected take**. The result arrives as a new take ("Take 1 · tuned") and replaces the original on the track; the original stays in the take lane, untouched. The report lists every sung region with its confidence. Regions below the threshold are left exactly as recorded. On the take lane, teal marks tuned regions and red marks skipped ones.
+
+## Mic check (do this first)
+
+Booth tab → **Mic check (10 seconds)**. Stay silent for 3 seconds, then say a line at recording volume, stop for a second, and say it again. You get three verdicts, each with what to change:
+
+- **Level**: too hot (clipping), too quiet, or good. Aim for peaks around −12 to −6 dB.
+- **Background**: how far the noise sits under your voice.
+- **Room**: how much the mic hears the room after you stop. "Roomy" is what makes a mix sound hollow: get within 2–3 inches of the end of the mic and record facing something soft.
+
+It also shows the recording rate (48 kHz) and the rate the mic reports. Nothing from the check is saved. Automix also measures the room on every take and holds it down ("Room control" in the report), but a close, dry take always beats a fix.
 
 ## Make a whole song (Song tab)
 

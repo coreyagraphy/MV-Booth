@@ -1,6 +1,7 @@
 import { CLEAN_DEFAULTS, FX, MODES, ROLES, DELAYS, REVERBS, estimateBpm, makeImpulse, renderVocal } from "./automix.js";
 import { STAGES, renderStem, runEngine } from "./engine.js";
 import { Metronome, TapTempo, barBeat, barSeconds, measureSync, snapTime } from "./metro.js";
+import { analyseMicCheck } from "./miccheck.js";
 import { encodeMp3 } from "./mp3.js";
 import { packSession, unpackSession, usedAudioIds } from "./package.js";
 import * as S from "./session.js";
@@ -9,7 +10,16 @@ import { NOTE_NAMES, SCALES, keyLabel } from "./tune.js";
 import { download, encodeWav } from "./wav.js";
 
 const $ = (id) => document.getElementById(id);
-const ctx = new AudioContext({ latencyHint: "interactive" });
+// USB vocal mics (the MAONO included) run at 48 kHz. Ask for 48 so takes are not resampled when
+// Windows playback happens to be set to 44.1; fall back to the device rate where that is refused.
+function makeContext() {
+  try {
+    return new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+  } catch {
+    return new AudioContext({ latencyHint: "interactive" });
+  }
+}
+const ctx = makeContext();
 const FS = ctx.sampleRate;
 const dbToLin = (db) => Math.pow(10, db / 20);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -286,6 +296,7 @@ async function ensureMic() {
     await listDevices();
     updateRoundTrip();
     startMeters();
+    $("rateOut").textContent = rateLine();
     return true;
   } catch (err) {
     console.error(err);
@@ -389,6 +400,53 @@ async function syncTest() {
   const r = measureSync(data, FS, { gap, lead, n });
   if (r.error) return status(`Sync test: ${r.error}`);
   applyLatency(r.latency, "Sync test");
+}
+
+/** What rate the booth records at, and what the mic itself reports (browsers don't always say). */
+function rateLine() {
+  const micRate = mic.stream?.getAudioTracks()[0]?.getSettings?.().sampleRate;
+  const k = (r) => `${+(r / 1000).toFixed(1)} kHz`;
+  if (!micRate) return `Recording at ${k(FS)}.`;
+  return micRate === FS ? `Recording at ${k(FS)} · mic runs at ${k(micRate)} (match).` : `Recording at ${k(FS)} · mic runs at ${k(micRate)}: set the mic to ${k(FS)} in Windows sound settings to avoid conversion.`;
+}
+
+/**
+ * Mic check: 3 s of silence, then a line said twice. Measures noise, level, clipping and room sound
+ * and says what to change before a take is wasted. Nothing is saved.
+ */
+const MIC_CHECK = { quiet: 3, talk: 7 };
+async function micCheck() {
+  if (guardBusy("checking the mic")) return;
+  if (!(await ensureMic())) return;
+  stopPlayback();
+  const out = $("micCheckOut");
+  const say = (t) => { out.innerHTML = `<section><h4>Mic check</h4><p class="mc-now">${t}</p></section>`; status(`Mic check: ${t}`); };
+  $("btnMicCheck").disabled = true;
+  mic.chunks = [];
+  mic.node.port.postMessage({ cmd: "start", at: ctx.currentTime + 0.1 });
+  say(`Stay silent for ${MIC_CHECK.quiet} seconds…`);
+  await new Promise((r) => setTimeout(r, (MIC_CHECK.quiet + 0.1) * 1000));
+  say("Now say a line at the volume you record at. Stop for a second. Say it again.");
+  await new Promise((r) => setTimeout(r, MIC_CHECK.talk * 1000));
+  await new Promise((resolve) => {
+    mic.onDone = resolve;
+    mic.node.port.postMessage({ cmd: "stop" });
+  });
+  const data = new Float32Array(mic.chunks.reduce((a, c) => a + c.length, 0));
+  let o = 0;
+  for (const c of mic.chunks) {
+    data.set(c, o);
+    o += c.length;
+  }
+  mic.chunks = [];
+  resetRecView();
+  $("btnMicCheck").disabled = false;
+  const r = analyseMicCheck(data, FS, { quietSec: MIC_CHECK.quiet });
+  ui.micCheck = r;
+  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  out.innerHTML = `<section><h4>Mic check</h4><ul class="mc">${r.checks.map((c) => `<li class="${c.state}"><b>${esc(c.title)}</b><span>${esc(c.text)}</span></li>`).join("")}<li class="info"><b>Sample rate</b><span>${esc(rateLine())}</span></li></ul></section>`;
+  const worst = r.checks.some((c) => c.state === "bad") ? "fix the red item, then check again" : r.checks.some((c) => c.state === "warn") ? "usable; the yellow item would make it better" : "you're set to record";
+  status(`Mic check done: ${worst}.`);
 }
 
 async function calibrate() {
@@ -2805,6 +2863,7 @@ function bindControls() {
   $("btnMonitor").onclick = () => toggleMonitor(!$("btnMonitor").classList.contains("on"));
   $("btnCalibrate").onclick = calibrate;
   $("btnSync").onclick = syncTest;
+  $("btnMicCheck").onclick = micCheck;
   $("btnLoop").onclick = () => {
     edit(session.loop.on ? "Loop off" : "Loop on", () => (session.loop.on = !session.loop.on), { audioChange: false });
     if (isLoop() && !inLoop(currentPos())) seek(session.loop.start);
@@ -3368,4 +3427,4 @@ updateUndo();
 await S.saveSession(session);
 document.fonts?.ready.then(() => document.querySelectorAll(".seg").forEach(moveThumb));
 status(session.tracks.length ? `Opened "${session.name}" · ${session.tracks.length} track(s).` : "Ready. Drop a beat, add a track, press R.");
-window.__booth = { get session() { return session; }, ui, audio, mic, automix, makeMySong, listenToSong, saveSong, checkForUpdate, exportPackage, importPackage, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };
+window.__booth = { micCheck, get session() { return session; }, ui, audio, mic, automix, makeMySong, listenToSong, saveSong, checkForUpdate, exportPackage, importPackage, renderAll, renderLanesOnly, importBeat, importBeats, importVocal, toggleRecord, ctx, undo, redo, splitAtPlayhead, seek, exportAs, startPlayback, stopPlayback, currentPos };

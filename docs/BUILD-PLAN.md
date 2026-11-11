@@ -15,6 +15,8 @@ The order differs from the brief in one place: the audit found that the Dynamics
 
 ## Phase 1: room-sound fix, mic check, honest setup
 
+**Status: built in 2.8 on branch `claude/phase-1-room-fix`, tests green. Not yet confirmed on a real MAONO take or by ear; not deployed.**
+
 Build:
 - Rider never boosts a decaying phrase tail; a downward expander after the compressor; gate depth set from the measured room sound.
 - **Mic check** (Booth tab): 10 seconds of silence then one spoken line. Reports noise floor, level, clipping, room sound, and the sample rate in use, with one plain instruction each ("move 2 inches closer", "turn gain down 6 dB", "Windows playback is at 44.1 kHz: set it to 48").

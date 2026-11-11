@@ -237,6 +237,23 @@ export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, 
   let activeFrames = 0;
   for (let f = 0; f < frames; f++) activeFrames += active[f];
 
+  // Room sound: how far the level has fallen 65–170 ms after a phrase stops, relative to the phrase.
+  // A close, dry take drops 35 dB or more; reflections from an untreated room hold it up.
+  const loudT = speechDb - 15;
+  const tails = [];
+  for (let f = 20; f + 26 < frames; f++) {
+    if (!(rms[f] > loudT && rms[f + 1] <= loudT)) continue;
+    let quiet = true;
+    for (let k = 2; k <= 25 && quiet; k++) quiet = rms[f + k] <= loudT;
+    if (!quiet) continue;
+    let body = 0, tail = 0;
+    for (let k = 0; k < 20; k++) body += Math.pow(10, rms[f - k] / 10);
+    for (let k = 6; k <= 16; k++) tail += Math.pow(10, rms[f + k] / 10);
+    tails.push(10 * Math.log10(tail / 11) - 10 * Math.log10(body / 20));
+    f += 25;
+  }
+  const roomDb = tails.length >= 2 ? percentile(tails, 0.5) : NaN;
+
   const spectrum = bandSpectrum(x, fs, (start) => active[Math.floor(start / HOP)] === 1).bands;
   const sibCentre = sibCentroidDen > 0 ? clamp(sibCentroidNum / sibCentroidDen, 4800, 9500) : 6500;
   onProgress?.(1);
@@ -261,6 +278,7 @@ export async function analyseVocal(raw, fs, mode, onProgress, { skipNR = false, 
     sibCentre,
     plosive,
     plosives,
+    roomDb,
     activeSec: (activeFrames * HOP) / fs,
   };
 }
@@ -297,20 +315,41 @@ function gainCurve(an, fs, mode, { gate = true, ride: doRide = true, breathDb = 
   for (let f = 0; f < an.frames; f++) if (an.active[f]) activeLoud.push(env[f]);
   const ref = activeLoud.length ? percentile(activeLoud, 0.55) : -20;
   const curve = new Float32Array(an.frames);
-  let rideMin = 0, rideMax = 0;
+  const tailCut = new Float32Array(an.frames);
+  // Room control. The sound that rings on after a word is the room, not the voice. Left alone, the
+  // rider reads it as quiet singing and turns it up, and the compressor (which only holds down the
+  // loud part) lifts it again: the vocal ends up "in a chamber". So: the rider never boosts a level
+  // that is falling away from its last peak, and an expander pushes that tail back down. Its depth
+  // covers what the compressor adds, plus more when the take itself is roomy.
+  const roomy = Number.isFinite(an.roomDb) ? clamp((an.roomDb + 34) * 0.8, 0, 7) : 0;
+  const depth = gate ? (doRide ? 5 : 0) + roomy * 2 : 0;
+  const knee = 10 - roomy * 0.45, slope = 0.9 + roomy * 0.06;
+  const gateDb = Math.min(preset.gateDb, -depth);
+  let rideMin = 0, rideMax = 0, peak = -120;
   for (let f = 0; f < an.frames; f++) {
+    // `peak` = level of the current sound; a new sound (level jumps up) starts a new reference.
+    const before = Math.min(an.rms[Math.max(0, f - 1)], an.rms[Math.max(0, f - 2)], an.rms[Math.max(0, f - 3)]);
+    if (an.rms[f] > peak || an.rms[f] - before > 5) peak = an.rms[f];
+    const below = peak - an.rms[f];
     if (an.active[f]) {
-      const ride = doRide ? clamp((ref - env[f]) * preset.rideAmount, -preset.rideRange, preset.rideRange) : 0;
+      let ride = doRide ? clamp((ref - env[f]) * preset.rideAmount, -preset.rideRange, preset.rideRange) : 0;
+      if (ride > 0) ride *= clamp(1 - (below - 3) / 6, 0, 1);
       curve[f] = ride;
       rideMin = Math.min(rideMin, ride);
       rideMax = Math.max(rideMax, ride);
     } else {
-      curve[f] = gate ? (an.breath[f] ? breathDb ?? preset.breathDb : preset.gateDb) : 0;
+      curve[f] = gate ? (an.breath[f] ? breathDb ?? preset.breathDb : gateDb) : 0;
     }
+    // Applies to every frame: a tail that has dropped far enough to count as a gap (or to be taken
+    // for a breath) must not wait for the slow gate.
+    tailCut[f] = -clamp((below - knee) * slope, 0, depth);
   }
-  // Open ~30 ms early, rise in ~20 ms, fall in ~90 ms.
+  // Open ~30 ms early, rise in ~20 ms, fall in ~90 ms. The tail expander closes faster (~25 ms).
   const shaped = smoothCurve(lookaheadMax(curve, 3), 0.45, 0.11);
-  return { curve: shaped, rideMin, rideMax };
+  const tail = smoothCurve(lookaheadMax(tailCut, 3), 0.5, 0.35);
+  // Never deeper than the gate (or the breath setting) already goes.
+  for (let f = 0; f < shaped.length; f++) shaped[f] = Math.max(shaped[f] + tail[f], Math.min(gateDb, shaped[f]));
+  return { curve: shaped, rideMin, rideMax, depth, gateDb };
 }
 
 function deessCurve(an, mode, mult = 1) {
@@ -485,7 +524,10 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile, s
       `Voice: F0 ≈ ${Math.round(an.f0Median)} Hz → low cut ${eq.hpf} Hz (24 dB/oct)`,
       `Tone EQ: 250 Hz ${fmt(eq.mud)} · 500 Hz ${fmt(eq.box)} · 3.2 kHz ${fmt(eq.presence)} · air ${fmt(eq.air)}`,
       `De-ess: ${ds.events} events @ ${(an.sibCentre / 1000).toFixed(1)} kHz, deepest ${ds.maxCut.toFixed(1)} dB`,
-      `Breaths: ${an.breaths} found → ${cl.breathDb >= 0 ? "kept as sung" : cl.breathDb <= -30 ? "removed" : `lowered ${cl.breathDb} dB`} · gaps gated ${preset.gateDb} dB`,
+      `Breaths: ${an.breaths} found → ${cl.breathDb >= 0 ? "kept as sung" : cl.breathDb <= -30 ? "removed" : `lowered ${cl.breathDb} dB`} · gaps gated ${ride.gateDb.toFixed(0)} dB`,
+      Number.isFinite(an.roomDb)
+        ? `Room control: sound after each phrase sits ${(-an.roomDb).toFixed(0)} dB under your voice (${an.roomDb > -24 ? "roomy: get closer to the mic or soften the room" : an.roomDb > -30 ? "some room sound" : "dry"}) → held down up to ${ride.depth.toFixed(0)} dB`
+        : "Room control: take too short to measure the room",
       cl.pop ? `Pop filter: ${an.plosives} plosive(s) caught (dynamic 260 Hz high-pass on each pop)` : "Pop filter: off",
       ...(cl.declick ? [clicks ? `De-click: ${clicks} mouth click(s) repaired` : "De-click: no mouth clicks found, audio untouched"] : []),
       ...(cl.hum ? [`Hum removal: ${cl.hum} Hz + 3 harmonics notched`] : []),
@@ -493,7 +535,7 @@ export async function renderVocal(track, raw, fs, mode, onProgress, { profile, s
       `Compressor: ${ratio}:1 @ ${threshold.toFixed(1)} dB${preset.grit ? ` + ${Math.round(preset.grit * 100)}% parallel grit` : ""}`,
       ...(track.fx === "phone" ? ["FX: phone band-pass 480 Hz–3.1 kHz + drive"] : []),
     ].filter((line) => {
-      if (!st.clean && /^(Noise reduction|De-ess|Breaths|Pop filter|De-click|Hum)/.test(line)) return false;
+      if (!st.clean && /^(Noise reduction|De-ess|Breaths|Pop filter|De-click|Hum|Room control)/.test(line)) return false;
       if (!st.tone && /^(Voice:|Tone EQ)/.test(line)) return false;
       if (!st.dynamics && /^(Vocal rider|Compressor)/.test(line)) return false;
       return true;

@@ -189,6 +189,11 @@
             </div>
             <p class="muted small">Monitor goes mic → Windows → browser → headphones, so you hear yourself a little late (an echo; Bluetooth: very late). For zero delay use your headset's <b>sidetone</b> or an interface's <b>direct monitoring</b> and leave Monitor off. Keep Windows "Listen to this device" off.</p>
             <label class="field"><span>Input gain <output id="inGainOut">0 dB</output></span><input type="range" id="inGain" min="-60" max="24" step="0.5" /></label>
+            <span class="muted small" id="rateOut"></span>
+            <h3>Mic check</h3>
+            <p class="explain">Run this once when you sit down, before the first take. It listens for 10 seconds and tells you if the mic is <b>too loud, too quiet, noisy</b> or picking up <b>too much of the room</b> (the cause of a hollow, "in a chamber" mix), and what to change. Nothing is recorded to the session.</p>
+            <div class="row"><button id="btnMicCheck" class="btn" title="3 seconds of silence, then say a line twice with a pause between">Mic check (10 seconds)</button></div>
+            <div id="micCheckOut" class="report"></div>
             <h3>Latency</h3>
             <p class="explain"><b>Takes landing off the beat?</b> Run the <b>Sync test</b> once per headset/mic: put your headphones on, press it, and clap (or say "ta") on every click. The booth measures how late your setup really is and lines every future take up with the beat. Already recorded? Select a clip and use <b>Timing ◀ ▶</b> in the toolbar.</p>
             <div class="row"><button id="btnSync" class="btn" title="Headphones on: clap or say 'ta' on each of the 12 clicks">Sync test (clap along)</button><button id="btnCalibrate" class="btn" title="No headset: speakers on (or hold the headphones to the mic), stay quiet">Loopback test</button></div>
